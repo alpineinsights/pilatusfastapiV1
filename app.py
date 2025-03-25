@@ -248,9 +248,6 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
         # Prepare files and content parts
         contents = []
         
-        # Track source files for citation
-        processed_files = []
-        
         # Add files to contents
         for file_path in file_paths:
             try:
@@ -264,9 +261,6 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
                     'mime_type': file_mime_type,
                     'data': file_data
                 })
-                
-                # Add to processed files for citation
-                processed_files.append(file_path)
             except Exception as e:
                 st.error(f"Error processing file for Gemini: {str(e)}")
         
@@ -274,24 +268,14 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
             return "No files were successfully processed for Gemini"
         
         # Add the prompt as the final content
-        prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. Pay particular attention to the fiscal period the provided context relates in case the user specifies a specific period. User's query: '{query}'"
+        prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: '{query}'"
         contents.append(prompt)
         
         # Generate content with files as context
         response = model.generate_content(contents)
         
-        # Extract response text
-        answer = response.text
-        
-        # Add sources section
-        answer += "\n\n### Sources\n"
-        # Add processed files as sources
-        for i, file_path in enumerate(processed_files, 1):
-            # Use the file name as the display text for the source
-            filename = os.path.basename(file_path)
-            answer += f"{i}. [{filename}]({file_path})\n"
-            
-        return answer
+        # Return the response text
+        return response.text
     except Exception as e:
         st.error(f"Error querying Gemini: {str(e)}")
         return f"An error occurred while processing your query: {str(e)}"
@@ -385,17 +369,17 @@ def main():
                     # Query Gemini with file context
                     response = query_gemini(query, local_files)
                     
-                    # Add used sources
-                    sources = "\n\n**Sources:**\n" + "\n".join([
-                        f"- {file['event_date']} - {file['event_title']} ({file['type']})"
-                        for file in st.session_state.processed_files
-                    ])
+                    # Add sources section using S3 URLs from session state
+                    response += "\n\n### Sources\n"
+                    for i, file_info in enumerate(st.session_state.processed_files, 1):
+                        filename = os.path.basename(file_info['s3_url'])
+                        response += f"{i}. [{filename}]({file_info['s3_url']})\n"
                     
-                    full_response = response + sources
-                    response_placeholder.markdown(full_response)
+                    # Display response with sources
+                    response_placeholder.markdown(response)
                     
                     # Add assistant response to chat history
-                    st.session_state.chat_history.append({"role": "assistant", "content": full_response})
+                    st.session_state.chat_history.append({"role": "assistant", "content": response})
             else:
                 response = "No documents are available for this company. Please try another company."
                 response_placeholder.markdown(response)
