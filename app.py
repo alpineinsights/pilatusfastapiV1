@@ -236,11 +236,14 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
         if not initialize_gemini():
             return "Error initializing Gemini client"
         
+        # Create a Gemini client
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        
         # Upload files to Gemini
         files = []
         for file_path in file_paths:
             try:
-                file = genai.upload_file(file_path)
+                file = client.files.upload(file=file_path)
                 files.append(file)
             except Exception as e:
                 st.error(f"Error uploading file to Gemini: {str(e)}")
@@ -248,23 +251,16 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
         if not files:
             return "No files were successfully uploaded to Gemini"
         
-        # Create a model instance
-        model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
-            generation_config={
-                "temperature": 0.3,
-                "top_p": 0.95,
-                "top_k": 40,
-                "max_output_tokens": 8192,
-            }
-        )
-        
         # Create the prompt with context
         prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: '{query}'"
         
+        # Create content list with files and prompt
+        contents = [*files, "\n\n", prompt]
+        
         # Generate content with files as context
-        response = model.generate_content(
-            [prompt, *files]
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=contents
         )
         
         return response.text
