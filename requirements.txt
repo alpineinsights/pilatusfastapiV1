@@ -19,7 +19,7 @@ reportlab==4.1.0
 Pillow==10.2.0
 
 # Google Gemini SDK
-google-generativeai==0.4.0
+google-generativeai==0.7.1
 
 # UI updates
 streamlit-autorefresh==1.0.1
