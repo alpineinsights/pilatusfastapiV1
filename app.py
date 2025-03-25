@@ -236,32 +236,37 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
         if not initialize_gemini():
             return "Error initializing Gemini client"
         
-        # Create a Gemini client
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        # Create a model instance
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
-        # Upload files to Gemini
-        files = []
+        # Prepare files and content parts
+        contents = []
+        
+        # Add files to contents
         for file_path in file_paths:
             try:
-                file = client.files.upload(file=file_path)
-                files.append(file)
+                # Open the file and create a content part
+                with open(file_path, 'rb') as f:
+                    file_data = f.read()
+                    
+                # Add file data as content part
+                file_mime_type = 'application/pdf'  # Assuming all files are PDFs
+                contents.append({
+                    'mime_type': file_mime_type,
+                    'data': file_data
+                })
             except Exception as e:
-                st.error(f"Error uploading file to Gemini: {str(e)}")
+                st.error(f"Error processing file for Gemini: {str(e)}")
         
-        if not files:
-            return "No files were successfully uploaded to Gemini"
+        if not contents:
+            return "No files were successfully processed for Gemini"
         
-        # Create the prompt with context
+        # Add the prompt as the final content
         prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: '{query}'"
-        
-        # Create content list with files and prompt
-        contents = [*files, "\n\n", prompt]
+        contents.append(prompt)
         
         # Generate content with files as context
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=contents
-        )
+        response = model.generate_content(contents)
         
         return response.text
     except Exception as e:
