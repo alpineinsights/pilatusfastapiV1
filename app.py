@@ -372,8 +372,31 @@ def main():
                     # Add sources section using S3 URLs from session state
                     response += "\n\n### Sources\n"
                     for i, file_info in enumerate(st.session_state.processed_files, 1):
-                        filename = os.path.basename(file_info['s3_url'])
-                        response += f"{i}. [{filename}]({file_info['s3_url']})\n"
+                        # Parse the s3:// URL to get bucket and key
+                        s3_url = file_info['s3_url']
+                        
+                        # Extract bucket and key from s3:// URL
+                        if s3_url.startswith('s3://'):
+                            # Remove the 's3://' prefix
+                            s3_path = s3_url[5:]
+                            # Split into bucket and key
+                            parts = s3_path.split('/', 1)
+                            if len(parts) == 2:
+                                bucket, key = parts
+                                # Create the https URL
+                                https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
+                                
+                                # Use the key as the filename (last part of the path)
+                                filename = os.path.basename(key)
+                                
+                                response += f"{i}. [{filename}]({https_url})\n"
+                            else:
+                                # Fallback if URL can't be parsed
+                                response += f"{i}. [Document {i}]({s3_url})\n"
+                        else:
+                            # If not an s3:// URL, use as is
+                            filename = os.path.basename(s3_url)
+                            response += f"{i}. [{filename}]({s3_url})\n"
                     
                     # Display response with sources
                     response_placeholder.markdown(response)
