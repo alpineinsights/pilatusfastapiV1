@@ -43,7 +43,7 @@ if "documents_fetched" not in st.session_state:
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "financial-insights-docs")
+S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 # Load company data from the pre-defined list
@@ -236,11 +236,20 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
         if not initialize_gemini():
             return "Error initializing Gemini client"
         
-        # Create a model instance
-        model = genai.GenerativeModel('gemini-2.0-flash')
+        # Create a model instance with proper configuration
+        model = genai.GenerativeModel(
+            'gemini-2.0-flash',
+            generation_config=genai.types.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=7000
+            )
+        )
         
         # Prepare files and content parts
         contents = []
+        
+        # Track source files for citation
+        processed_files = []
         
         # Add files to contents
         for file_path in file_paths:
@@ -255,6 +264,9 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
                     'mime_type': file_mime_type,
                     'data': file_data
                 })
+                
+                # Add to processed files for citation
+                processed_files.append(file_path)
             except Exception as e:
                 st.error(f"Error processing file for Gemini: {str(e)}")
         
@@ -262,13 +274,24 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
             return "No files were successfully processed for Gemini"
         
         # Add the prompt as the final content
-        prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: '{query}'"
+        prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. Pay particular attention to the fiscal period the provided context relates in case the user specifies a specific period. User's query: '{query}'"
         contents.append(prompt)
         
         # Generate content with files as context
         response = model.generate_content(contents)
         
-        return response.text
+        # Extract response text
+        answer = response.text
+        
+        # Add sources section
+        answer += "\n\n### Sources\n"
+        # Add processed files as sources
+        for i, file_path in enumerate(processed_files, 1):
+            # Use the file name as the display text for the source
+            filename = os.path.basename(file_path)
+            answer += f"{i}. [{filename}]({file_path})\n"
+            
+        return answer
     except Exception as e:
         st.error(f"Error querying Gemini: {str(e)}")
         return f"An error occurred while processing your query: {str(e)}"
