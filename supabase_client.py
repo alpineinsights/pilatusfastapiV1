@@ -54,9 +54,9 @@ def get_quartrid_by_name(company_name: str) -> Optional[str]:
     """
     try:
         conn = init_connection()
-        rows = conn.query(f"SELECT \"QuartrID\" FROM universe WHERE \"Name\" = '{company_name}';")
-        if not rows.empty and "QuartrID" in rows.columns:
-            return rows.iloc[0]["QuartrID"]
+        rows = conn.query(f"SELECT \"Quartr Id\" FROM universe WHERE \"Name\" = '{company_name}';")
+        if not rows.empty and "Quartr Id" in rows.columns:
+            return rows.iloc[0]["Quartr Id"]
         return None
     except Exception as e:
         st.error(f"Error fetching Quartr ID for {company_name}: {str(e)}")
@@ -96,7 +96,7 @@ def get_company_by_quartrid(quartrid: str) -> Optional[Dict]:
     """
     try:
         conn = init_connection()
-        rows = conn.query(f"SELECT * FROM universe WHERE \"QuartrID\" = '{quartrid}';")
+        rows = conn.query(f"SELECT * FROM universe WHERE \"Quartr Id\" = '{quartrid}';")
         if not rows.empty:
             return rows.iloc[0].to_dict()
         return None
