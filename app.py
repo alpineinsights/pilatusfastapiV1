@@ -4,7 +4,6 @@ import os
 import boto3
 import tempfile
 import uuid
-from dotenv import load_dotenv
 import google.generativeai as genai
 import time
 from utils import QuartrAPI, S3Handler, TranscriptProcessor
@@ -12,10 +11,7 @@ import aiohttp
 import asyncio
 from typing import List, Dict, Tuple
 import json
-from company_data import COMPANY_DATA, get_company_names, get_isin_by_name
-
-# Load environment variables
-load_dotenv()
+from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by_name, get_all_companies
 
 # Set page configuration
 st.set_page_config(
@@ -39,23 +35,28 @@ if "company_data" not in st.session_state:
 if "documents_fetched" not in st.session_state:
     st.session_state.documents_fetched = False
 
-# Load AWS credentials
-AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION")
-S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Load AWS credentials from Streamlit secrets
+AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
+AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
+AWS_DEFAULT_REGION = st.secrets["AWS_DEFAULT_REGION"]
+S3_BUCKET_NAME = st.secrets["S3_BUCKET_NAME"]
+GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+QUARTR_API_KEY = st.secrets["QUARTR_API_KEY"]
 
-# Load company data from the pre-defined list
-@st.cache_data
+# Load company data from Supabase
+@st.cache_data(ttl=60*60)  # Cache for 1 hour
 def load_company_data():
-    """Load pre-defined company data"""
-    return pd.DataFrame(COMPANY_DATA)
+    """Load company data from Supabase"""
+    companies = get_all_companies()
+    if not companies:
+        st.error("Failed to load company data from Supabase.")
+        return None
+    return pd.DataFrame(companies)
 
 # Initialize Gemini model
 def initialize_gemini():
     if not GEMINI_API_KEY:
-        st.error("Gemini API key not found in environment variables")
+        st.error("Gemini API key not found in Streamlit secrets")
         return None
     
     try:
@@ -67,7 +68,7 @@ def initialize_gemini():
         return None
 
 # Function to process company documents
-async def process_company_documents(isin: str) -> List[Dict]:
+async def process_company_documents(company_id: str, event_type: str = "all") -> List[Dict]:
     """Process company documents and return list of file information"""
     try:
         async with aiohttp.ClientSession() as session:
@@ -76,8 +77,8 @@ async def process_company_documents(isin: str) -> List[Dict]:
             s3_handler = S3Handler()
             transcript_processor = TranscriptProcessor()
             
-            # Get company data from Quartr API
-            company_data = await quartr_api.get_company_events(isin, session)
+            # Get company data from Quartr API using company ID
+            company_data = await quartr_api.get_company_events(company_id, session, event_type)
             if not company_data:
                 return []
             
@@ -287,7 +288,7 @@ def main():
     # Load company data
     company_data = load_company_data()
     if company_data is None:
-        st.error("Failed to load company data. Please check the company data module.")
+        st.error("Failed to load company data. Please check the Supabase connection.")
         return
     
     # Sidebar with company selection
@@ -302,13 +303,15 @@ def main():
         
         if selected_company:
             isin = get_isin_by_name(selected_company)
+            quartr_id = get_quartrid_by_name(selected_company)
             
             # Check if company changed
             if st.session_state.current_company != selected_company:
                 st.session_state.current_company = selected_company
                 st.session_state.company_data = {
                     'name': selected_company,
-                    'isin': isin
+                    'isin': isin,
+                    'quartr_id': quartr_id
                 }
                 
                 # Clear previous conversation when company changes
@@ -343,8 +346,8 @@ def main():
             # Fetch documents if not already fetched
             if not st.session_state.documents_fetched:
                 with st.spinner(f"Fetching documents for {st.session_state.company_data['name']}..."):
-                    isin = st.session_state.company_data['isin']
-                    processed_files = asyncio.run(process_company_documents(isin))
+                    quartr_id = st.session_state.company_data['quartr_id']
+                    processed_files = asyncio.run(process_company_documents(quartr_id))
                     st.session_state.processed_files = processed_files
                     st.session_state.documents_fetched = True
                     
