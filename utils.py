@@ -19,15 +19,15 @@ logger = logging.getLogger(__name__)
 
 # Get environment variables
 try:
-    # Access secrets using the correct nested structure
-    AWS_ACCESS_KEY_ID = st.secrets["aws"]["AWS_ACCESS_KEY_ID"]
-    AWS_SECRET_ACCESS_KEY = st.secrets["aws"]["AWS_SECRET_ACCESS_KEY"]
-    AWS_DEFAULT_REGION = st.secrets["aws"]["AWS_DEFAULT_REGION"]
-    S3_BUCKET_NAME = st.secrets["aws"]["S3_BUCKET_NAME"]
-    QUARTR_API_KEY = st.secrets["api_keys"]["QUARTR_API_KEY"]
+    # Access secrets using flat structure (matching Streamlit Cloud)
+    AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
+    AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
+    AWS_DEFAULT_REGION = st.secrets["AWS_DEFAULT_REGION"]
+    S3_BUCKET_NAME = st.secrets["S3_BUCKET_NAME"]
+    QUARTR_API_KEY = st.secrets["QUARTR_API_KEY"]
 except KeyError:
     # Log the error and set default values
-    logger.error("Failed to access secrets with nested structure, using fallback values")
+    logger.error("Failed to access secrets with flat structure, using fallback values")
     AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
     AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
     AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "eu-central-2")
