@@ -1,18 +1,41 @@
 """
 This module handles the integration with Supabase to fetch company data.
-Uses Streamlit's native Supabase integration.
+Uses the Supabase Python client for more reliable connections.
 """
 
 import streamlit as st
+from supabase import create_client
 from typing import Dict, List, Optional
+import pandas as pd
 
-# Initialize Supabase connection using Streamlit's native integration
+# Initialize Supabase client
 @st.cache_resource
-def init_connection():
+def init_client():
     """
-    Initialize and cache the Supabase connection using Streamlit's native integration
+    Initialize and cache the Supabase client connection
     """
-    return st.connection("supabase", type="sql")
+    try:
+        # Try to get supabase settings from the root level
+        supabase_url = st.secrets["supabase_url"]
+        supabase_key = st.secrets["supabase_anon_key"]
+        return create_client(supabase_url, supabase_key)
+    except KeyError as e:
+        # Fallback to extracting from connection settings
+        try:
+            db_url = st.secrets["connections"]["supabase"]["url"]
+            host = db_url.split("@")[1].split(":")[0]
+            supabase_url = f"https://{host.replace('db.', '')}"
+            st.error(f"Using extracted URL: {supabase_url}")
+            
+            # You'll need to add your anon key to secrets
+            if "supabase_anon_key" in st.secrets:
+                supabase_key = st.secrets["supabase_anon_key"]
+                return create_client(supabase_url, supabase_key)
+        except Exception as e2:
+            st.error(f"Failed to extract Supabase config: {e2}")
+        
+        st.error(f"Missing Supabase configuration: {e}")
+        return None
 
 @st.cache_data(ttl=60*60)  # Cache for 1 hour
 def get_all_companies() -> List[Dict]:
@@ -23,12 +46,24 @@ def get_all_companies() -> List[Dict]:
         List[Dict]: A list of company data dictionaries
     """
     try:
-        conn = init_connection()
-        rows = conn.query("SELECT * FROM universe;")
-        return rows.to_dict('records')
+        client = init_client()
+        if not client:
+            return []
+            
+        response = client.table('universe').select('*').execute()
+        if hasattr(response, 'data'):
+            return response.data
+        return []
     except Exception as e:
         st.error(f"Error fetching companies from Supabase: {str(e)}")
-        return []
+        # Fallback to direct SQL connection
+        try:
+            conn = st.connection("supabase", type="sql")
+            rows = conn.query("SELECT * FROM universe;")
+            return rows.to_dict('records')
+        except Exception as e2:
+            st.error(f"Fallback also failed: {str(e2)}")
+            return []
 
 @st.cache_data(ttl=60*60)  # Cache for 1 hour
 def get_company_names() -> List[str]:
@@ -53,13 +88,24 @@ def get_quartrid_by_name(company_name: str) -> Optional[str]:
         str: The Quartr ID if found, None otherwise
     """
     try:
-        conn = init_connection()
-        rows = conn.query(f"SELECT \"Quartr Id\" FROM universe WHERE \"Name\" = '{company_name}';")
-        if not rows.empty and "Quartr Id" in rows.columns:
-            return rows.iloc[0]["Quartr Id"]
+        client = init_client()
+        if not client:
+            return None
+            
+        response = client.table('universe').select('\"Quartr Id\"').eq('Name', company_name).execute()
+        if response.data and len(response.data) > 0:
+            return response.data[0].get("Quartr Id")
         return None
     except Exception as e:
         st.error(f"Error fetching Quartr ID for {company_name}: {str(e)}")
+        # Fallback to direct SQL if API fails
+        try:
+            conn = st.connection("supabase", type="sql")
+            rows = conn.query(f"SELECT \"Quartr Id\" FROM universe WHERE \"Name\" = '{company_name}';")
+            if not rows.empty and "Quartr Id" in rows.columns:
+                return rows.iloc[0]["Quartr Id"]
+        except:
+            pass
         return None
 
 @st.cache_data(ttl=60*60)  # Cache for 1 hour
@@ -74,13 +120,24 @@ def get_isin_by_name(company_name: str) -> Optional[str]:
         str: The ISIN code if found, None otherwise
     """
     try:
-        conn = init_connection()
-        rows = conn.query(f"SELECT \"ISIN\" FROM universe WHERE \"Name\" = '{company_name}';")
-        if not rows.empty and "ISIN" in rows.columns:
-            return rows.iloc[0]["ISIN"]
+        client = init_client()
+        if not client:
+            return None
+            
+        response = client.table('universe').select('ISIN').eq('Name', company_name).execute()
+        if response.data and len(response.data) > 0:
+            return response.data[0].get("ISIN")
         return None
     except Exception as e:
         st.error(f"Error fetching ISIN for {company_name}: {str(e)}")
+        # Fallback to direct SQL if API fails
+        try:
+            conn = st.connection("supabase", type="sql")
+            rows = conn.query(f"SELECT \"ISIN\" FROM universe WHERE \"Name\" = '{company_name}';")
+            if not rows.empty and "ISIN" in rows.columns:
+                return rows.iloc[0]["ISIN"]
+        except:
+            pass
         return None
 
 @st.cache_data(ttl=60*60)  # Cache for 1 hour
@@ -95,10 +152,13 @@ def get_company_by_quartrid(quartrid: str) -> Optional[Dict]:
         dict: The company data if found, None otherwise
     """
     try:
-        conn = init_connection()
-        rows = conn.query(f"SELECT * FROM universe WHERE \"Quartr Id\" = '{quartrid}';")
-        if not rows.empty:
-            return rows.iloc[0].to_dict()
+        client = init_client()
+        if not client:
+            return None
+            
+        response = client.table('universe').select('*').eq('\"Quartr Id\"', quartrid).execute()
+        if response.data and len(response.data) > 0:
+            return response.data[0]
         return None
     except Exception as e:
         st.error(f"Error fetching company by Quartr ID {quartrid}: {str(e)}")
@@ -116,10 +176,13 @@ def get_company_by_isin(isin: str) -> Optional[Dict]:
         dict: The company data if found, None otherwise
     """
     try:
-        conn = init_connection()
-        rows = conn.query(f"SELECT * FROM universe WHERE \"ISIN\" = '{isin}';")
-        if not rows.empty:
-            return rows.iloc[0].to_dict()
+        client = init_client()
+        if not client:
+            return None
+            
+        response = client.table('universe').select('*').eq('ISIN', isin).execute()
+        if response.data and len(response.data) > 0:
+            return response.data[0]
         return None
     except Exception as e:
         st.error(f"Error fetching company by ISIN {isin}: {str(e)}")
