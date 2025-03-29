@@ -4,56 +4,46 @@ import boto3
 import io
 import json
 import logging
-import streamlit as st
+import os
+from dotenv import load_dotenv
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from typing import Dict, Optional, List
+import streamlit as st
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Get environment variables
-AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
-AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
-AWS_DEFAULT_REGION = st.secrets["AWS_DEFAULT_REGION"]
-QUARTR_API_KEY = st.secrets["QUARTR_API_KEY"]
+try:
+    # Access secrets using the correct nested structure
+    AWS_ACCESS_KEY_ID = st.secrets["aws"]["AWS_ACCESS_KEY_ID"]
+    AWS_SECRET_ACCESS_KEY = st.secrets["aws"]["AWS_SECRET_ACCESS_KEY"]
+    AWS_DEFAULT_REGION = st.secrets["aws"]["AWS_DEFAULT_REGION"]
+    S3_BUCKET_NAME = st.secrets["aws"]["S3_BUCKET_NAME"]
+    QUARTR_API_KEY = st.secrets["api_keys"]["QUARTR_API_KEY"]
+except KeyError:
+    # Log the error and set default values
+    logger.error("Failed to access secrets with nested structure, using fallback values")
+    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
+    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "eu-central-2")
+    S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "alpineinsights")
+    QUARTR_API_KEY = os.getenv("QUARTR_API_KEY", "")
 
 class QuartrAPI:
     def __init__(self):
         if not QUARTR_API_KEY:
-            raise ValueError("Quartr API key not found in Streamlit secrets")
+            raise ValueError("Quartr API key not found in environment variables")
         self.api_key = QUARTR_API_KEY
         self.base_url = "https://api.quartr.com/public/v1"
         self.headers = {"X-Api-Key": self.api_key}
 
-    async def get_company_events(self, company_id: str, session: aiohttp.ClientSession, event_type: str = "all") -> Dict:
-        """Get company events from Quartr API using company ID"""
-        url = f"{self.base_url}/companies/{company_id}"
-        
-        # Add event_type as query parameter if specified
-        params = {"eventType": event_type} if event_type != "all" else {}
-        
-        try:
-            logger.info(f"Requesting data from Quartr API for company ID: {company_id}")
-            async with session.get(url, headers=self.headers, params=params) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    logger.info(f"Successfully retrieved data for company ID: {company_id}")
-                    return data
-                else:
-                    response_text = await response.text()
-                    logger.error(f"Error fetching data for company ID {company_id}: Status {response.status}, Response: {response_text}")
-                    return {}
-        except Exception as e:
-            logger.error(f"Exception while fetching data for company ID {company_id}: {str(e)}")
-            return {}
-    
-    # For backward compatibility - will use company ID lookup if available
-    async def get_company_events_by_isin(self, isin: str, session: aiohttp.ClientSession) -> Dict:
-        """Get company events from Quartr API using ISIN code (legacy method)"""
+    async def get_company_events(self, isin: str, session: aiohttp.ClientSession) -> Dict:
+        """Get company events from Quartr API"""
         url = f"{self.base_url}/companies/isin/{isin}"
         try:
             logger.info(f"Requesting data from Quartr API for ISIN: {isin}")
@@ -245,7 +235,7 @@ class TranscriptProcessor:
 class S3Handler:
     def __init__(self):
         if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION]):
-            raise ValueError("AWS credentials not found in Streamlit secrets")
+            raise ValueError("AWS credentials not found in environment variables")
         self.session = aioboto3.Session(
             aws_access_key_id=AWS_ACCESS_KEY_ID,
             aws_secret_access_key=AWS_SECRET_ACCESS_KEY,

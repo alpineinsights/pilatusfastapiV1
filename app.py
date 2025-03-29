@@ -35,13 +35,26 @@ if "company_data" not in st.session_state:
 if "documents_fetched" not in st.session_state:
     st.session_state.documents_fetched = False
 
-# Load AWS credentials from Streamlit secrets
-AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
-AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
-AWS_DEFAULT_REGION = st.secrets["AWS_DEFAULT_REGION"]
-S3_BUCKET_NAME = st.secrets["S3_BUCKET_NAME"]
-GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-QUARTR_API_KEY = st.secrets["QUARTR_API_KEY"]
+# Load credentials from Streamlit secrets
+try:
+    # Access AWS credentials from aws section
+    AWS_ACCESS_KEY_ID = st.secrets["aws"]["AWS_ACCESS_KEY_ID"]
+    AWS_SECRET_ACCESS_KEY = st.secrets["aws"]["AWS_SECRET_ACCESS_KEY"]
+    AWS_DEFAULT_REGION = st.secrets["aws"]["AWS_DEFAULT_REGION"]
+    S3_BUCKET_NAME = st.secrets["aws"]["S3_BUCKET_NAME"]
+    
+    # Access API keys from api_keys section
+    GEMINI_API_KEY = st.secrets["api_keys"]["GEMINI_API_KEY"]
+    QUARTR_API_KEY = st.secrets["api_keys"]["QUARTR_API_KEY"]
+except KeyError as e:
+    st.error(f"Missing required secret: {str(e)}. Please configure your secrets in Streamlit Cloud.")
+    # Provide default values for development
+    AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID", "")
+    AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+    AWS_DEFAULT_REGION = os.environ.get("AWS_DEFAULT_REGION", "eu-central-2")
+    S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "alpineinsights")
+    GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+    QUARTR_API_KEY = os.environ.get("QUARTR_API_KEY", "")
 
 # Load company data from Supabase
 @st.cache_data(ttl=60*60)  # Cache for 1 hour
