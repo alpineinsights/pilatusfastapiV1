@@ -35,17 +35,20 @@ if "company_data" not in st.session_state:
 if "documents_fetched" not in st.session_state:
     st.session_state.documents_fetched = False
 
-# Load credentials from Streamlit secrets
+# Load credentials from Streamlit secrets - using flat structure
 try:
-    # Access AWS credentials from aws section
-    AWS_ACCESS_KEY_ID = st.secrets["aws"]["AWS_ACCESS_KEY_ID"]
-    AWS_SECRET_ACCESS_KEY = st.secrets["aws"]["AWS_SECRET_ACCESS_KEY"]
-    AWS_DEFAULT_REGION = st.secrets["aws"]["AWS_DEFAULT_REGION"]
-    S3_BUCKET_NAME = st.secrets["aws"]["S3_BUCKET_NAME"]
+    # Access AWS credentials directly from root level
+    AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
+    AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
+    AWS_DEFAULT_REGION = st.secrets["AWS_DEFAULT_REGION"]
+    S3_BUCKET_NAME = st.secrets["S3_BUCKET_NAME"]
     
-    # Access API keys from api_keys section
-    GEMINI_API_KEY = st.secrets["api_keys"]["GEMINI_API_KEY"]
-    QUARTR_API_KEY = st.secrets["api_keys"]["QUARTR_API_KEY"]
+    # Access API keys directly from root level
+    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+    QUARTR_API_KEY = st.secrets["QUARTR_API_KEY"]
+    
+    # For debugging
+    st.sidebar.write("Available secret keys:", list(st.secrets.keys()))
 except KeyError as e:
     st.error(f"Missing required secret: {str(e)}. Please configure your secrets in Streamlit Cloud.")
     # Provide default values for development
