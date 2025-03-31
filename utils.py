@@ -42,22 +42,61 @@ class QuartrAPI:
         self.base_url = "https://api.quartr.com/public/v1"
         self.headers = {"X-Api-Key": self.api_key}
 
-    async def get_company_events(self, isin: str, session: aiohttp.ClientSession) -> Dict:
-        """Get company events from Quartr API"""
-        url = f"{self.base_url}/companies/isin/{isin}"
+    async def get_company_events(self, company_id: str, session: aiohttp.ClientSession, event_type: str = "all") -> Dict:
+        """Get company events from Quartr API using company ID (not ISIN)"""
+        url = f"{self.base_url}/companies/{company_id}/earlier-events"
+        
+        # Add query parameters
+        params = {}
+        if event_type != "all":
+            params["type"] = event_type
+        
+        # Set limit to 10 to get enough events to select from
+        params["limit"] = 10
+        params["page"] = 1
+        
         try:
-            logger.info(f"Requesting data from Quartr API for ISIN: {isin}")
+            logger.info(f"Requesting earlier events from Quartr API for company ID: {company_id}")
+            async with session.get(url, headers=self.headers, params=params) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    logger.info(f"Successfully retrieved earlier events for company ID: {company_id}")
+                    
+                    # Extract company information from the first event if available
+                    if data.get('data') and len(data['data']) > 0:
+                        company_name = data.get('data', [])[0].get('companyName', 'Unknown Company')
+                        events = data.get('data', [])
+                        
+                        # Transform the response to match the expected format in the app
+                        return {
+                            'displayName': company_name,
+                            'events': events
+                        }
+                    return {}
+                else:
+                    response_text = await response.text()
+                    logger.error(f"Error fetching earlier events for company ID {company_id}: Status {response.status}, Response: {response_text}")
+                    return {}
+        except Exception as e:
+            logger.error(f"Exception while fetching earlier events for company ID {company_id}: {str(e)}")
+            return {}
+    
+    async def get_company_info(self, company_id: str, session: aiohttp.ClientSession) -> Dict:
+        """Get basic company information using company ID"""
+        url = f"{self.base_url}/companies/{company_id}"
+        try:
+            logger.info(f"Requesting company info from Quartr API for company ID: {company_id}")
             async with session.get(url, headers=self.headers) as response:
                 if response.status == 200:
                     data = await response.json()
-                    logger.info(f"Successfully retrieved data for ISIN: {isin}")
+                    logger.info(f"Successfully retrieved company info for company ID: {company_id}")
                     return data
                 else:
                     response_text = await response.text()
-                    logger.error(f"Error fetching data for ISIN {isin}: Status {response.status}, Response: {response_text}")
+                    logger.error(f"Error fetching company info for company ID {company_id}: Status {response.status}, Response: {response_text}")
                     return {}
         except Exception as e:
-            logger.error(f"Exception while fetching data for ISIN {isin}: {str(e)}")
+            logger.error(f"Exception while fetching company info for company ID {company_id}: {str(e)}")
             return {}
     
     async def get_document(self, doc_url: str, session: aiohttp.ClientSession):

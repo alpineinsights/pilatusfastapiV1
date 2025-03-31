@@ -101,27 +101,86 @@ async def process_company_documents(company_id: str, event_type: str = "all") ->
             company_name = company_data.get('displayName', 'Unknown Company')
             events = company_data.get('events', [])
             
-            # Sort events by date (descending) and take the most recent events first
+            # Sort events by date (descending) - should already be sorted, but just to be sure
             events.sort(key=lambda x: x.get('eventDate', ''), reverse=True)
             
             processed_files = []
             transcript_count = 0
             report_count = 0
-            slides_count = 0
+            pdf_count = 0
             
-            # Only process up to 6 documents in total (2 of each type)
+            # Process up to 2 documents of each type
             for event in events:
                 # Stop processing if we have enough documents (2 of each type)
-                if transcript_count >= 2 and report_count >= 2 and slides_count >= 2:
+                if transcript_count >= 2 and report_count >= 2 and pdf_count >= 2:
                     break
                     
                 event_date = event.get('eventDate', '').split('T')[0]
                 event_title = event.get('eventTitle', 'Unknown Event')
                 
-                # Only process the document types we need
+                # Process PDF/slides (if we need more)
+                if pdf_count < 2 and event.get('pdfUrl'):
+                    try:
+                        async with session.get(event.get('pdfUrl')) as response:
+                            if response.status == 200:
+                                content = await response.read()
+                                original_filename = event.get('pdfUrl').split('/')[-1]
+                                
+                                filename = s3_handler.create_filename(
+                                    company_name, event_date, event_title, 'slides', original_filename
+                                )
+                                
+                                success = await s3_handler.upload_file(
+                                    content, filename, S3_BUCKET_NAME, 
+                                    response.headers.get('content-type', 'application/pdf')
+                                )
+                                
+                                if success:
+                                    processed_files.append({
+                                        'filename': filename,
+                                        'type': 'slides',
+                                        'event_date': event_date,
+                                        'event_title': event_title,
+                                        's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
+                                    })
+                                    pdf_count += 1
+                    except Exception as e:
+                        st.error(f"Error processing slides for {event_title}: {str(e)}")
+                
+                # Process report (if we need more)
+                if report_count < 2 and event.get('reportUrl'):
+                    try:
+                        async with session.get(event.get('reportUrl')) as response:
+                            if response.status == 200:
+                                content = await response.read()
+                                original_filename = event.get('reportUrl').split('/')[-1]
+                                
+                                filename = s3_handler.create_filename(
+                                    company_name, event_date, event_title, 'report', original_filename
+                                )
+                                
+                                success = await s3_handler.upload_file(
+                                    content, filename, S3_BUCKET_NAME, 
+                                    response.headers.get('content-type', 'application/pdf')
+                                )
+                                
+                                if success:
+                                    processed_files.append({
+                                        'filename': filename,
+                                        'type': 'report',
+                                        'event_date': event_date,
+                                        'event_title': event_title,
+                                        's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
+                                    })
+                                    report_count += 1
+                    except Exception as e:
+                        st.error(f"Error processing report for {event_title}: {str(e)}")
+                
+                # Only process the transcript if we need more
                 if transcript_count < 2 and event.get('transcriptUrl'):
                     # Process transcript
                     try:
+                        # Get transcript data
                         transcripts = event.get('transcripts', {})
                         if not transcripts:
                             # If the transcripts object is empty, check for liveTranscripts
@@ -155,65 +214,9 @@ async def process_company_documents(company_id: str, event_type: str = "all") ->
                                 transcript_count += 1
                     except Exception as e:
                         st.error(f"Error processing transcript for {event_title}: {str(e)}")
-                
-                # Process report (if we need more)
-                if report_count < 2 and event.get('reportUrl'):
-                    try:
-                        async with session.get(event.get('reportUrl')) as response:
-                            if response.status == 200:
-                                content = await response.read()
-                                original_filename = event.get('reportUrl').split('/')[-1]
-                                
-                                filename = s3_handler.create_filename(
-                                    company_name, event_date, event_title, 'report', original_filename
-                                )
-                                
-                                success = await s3_handler.upload_file(
-                                    content, filename, S3_BUCKET_NAME, 
-                                    response.headers.get('content-type', 'application/pdf')
-                                )
-                                
-                                if success:
-                                    processed_files.append({
-                                        'filename': filename,
-                                        'type': 'report',
-                                        'event_date': event_date,
-                                        'event_title': event_title,
-                                        's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
-                                    })
-                                    report_count += 1
-                    except Exception as e:
-                        st.error(f"Error processing report for {event_title}: {str(e)}")
-                
-                # Process slides/PDF (if we need more)
-                if slides_count < 2 and event.get('pdfUrl'):
-                    try:
-                        async with session.get(event.get('pdfUrl')) as response:
-                            if response.status == 200:
-                                content = await response.read()
-                                original_filename = event.get('pdfUrl').split('/')[-1]
-                                
-                                filename = s3_handler.create_filename(
-                                    company_name, event_date, event_title, 'slides', original_filename
-                                )
-                                
-                                success = await s3_handler.upload_file(
-                                    content, filename, S3_BUCKET_NAME, 
-                                    response.headers.get('content-type', 'application/pdf')
-                                )
-                                
-                                if success:
-                                    processed_files.append({
-                                        'filename': filename,
-                                        'type': 'slides',
-                                        'event_date': event_date,
-                                        'event_title': event_title,
-                                        's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
-                                    })
-                                    slides_count += 1
-                    except Exception as e:
-                        st.error(f"Error processing slides for {event_title}: {str(e)}")
             
+            # Log the number of documents processed
+            logger.info(f"Processed {pdf_count} PDFs, {report_count} reports, and {transcript_count} transcripts")
             return processed_files
     except Exception as e:
         st.error(f"Error processing company documents: {str(e)}")
@@ -318,16 +321,20 @@ def main():
         )
         
         if selected_company:
-            isin = get_isin_by_name(selected_company)
+            # Get both Quartr ID (primary) and ISIN (legacy)
             quartr_id = get_quartrid_by_name(selected_company)
+            isin = get_isin_by_name(selected_company)
+            
+            # Display Quartr ID for debugging
+            st.info(f"Quartr ID: {quartr_id}")
             
             # Check if company changed
             if st.session_state.current_company != selected_company:
                 st.session_state.current_company = selected_company
                 st.session_state.company_data = {
                     'name': selected_company,
-                    'isin': isin,
-                    'quartr_id': quartr_id
+                    'isin': isin,  # Keep for backward compatibility
+                    'quartr_id': quartr_id  # Primary identifier
                 }
                 
                 # Clear previous conversation when company changes
@@ -362,7 +369,15 @@ def main():
             # Fetch documents if not already fetched
             if not st.session_state.documents_fetched:
                 with st.spinner(f"Fetching documents for {st.session_state.company_data['name']}..."):
+                    # Use Quartr ID to fetch documents instead of ISIN
                     quartr_id = st.session_state.company_data['quartr_id']
+                    if not quartr_id:
+                        response = "No Quartr ID found for this company. Please select another company."
+                        response_placeholder.markdown(response)
+                        st.session_state.chat_history.append({"role": "assistant", "content": response})
+                        return
+                        
+                    # Process company documents using the Quartr ID
                     processed_files = asyncio.run(process_company_documents(quartr_id))
                     st.session_state.processed_files = processed_files
                     st.session_state.documents_fetched = True
