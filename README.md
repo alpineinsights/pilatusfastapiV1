@@ -1,24 +1,52 @@
-Financial Insights Chat App
-A Streamlit application that allows users to chat with financial documents using Gemini AI and the Quartr API. The app fetches company financial documents, processes them, and uses AI to answer user queries about the selected company.
+# Financial Insights Chat App
+
+A Streamlit application that enables financial professionals to chat with financial documents using a multi-LLM pipeline. The app fetches company financial documents from the Quartr API, processes them, gets real-time web information, and uses advanced AI models to answer user queries about the selected company.
 
 ## Features
 
-- Select a company from a list fetched from Supabase
-- Fetch company financial documents from Quartr API using company IDs
+- Select a company from a comprehensive list fetched from Supabase
+- Fetch financial documents from Quartr API using company IDs
 - Convert transcript data to well-formatted PDFs
-- Upload documents to Amazon S3
-- Process user queries against the documents using Google's Gemini 2.0 Flash model
-- Display AI-generated responses with source information
+- Upload and retrieve documents from Amazon S3
+- Three-step LLM chain for comprehensive answers:
+  1. **Document Analysis**: Gemini 2.0 Flash analyzes company documents
+  2. **Web Search**: Perplexity API fetches current information
+  3. **Final Synthesis**: Claude 3.7 Sonnet combines both sources for comprehensive answers
+- Parallel processing for optimal performance
+- Display AI-generated responses with source links
 
 ## Architecture
-The application consists of several components:
 
-- Streamlit Web Interface: Provides the user interface for company selection and chat
-- Supabase Integration: Stores and retrieves company data with Quartr IDs
-- Quartr API Integration: Fetches financial documents for the selected company using Quartr IDs
-- Document Processing: Converts and standardizes documents (especially transcripts)
-- S3 Storage: Stores processed documents for retrieval
-- Gemini AI Integration: Analyzes documents and responds to user queries
+The application uses a sophisticated architecture with multiple components:
+
+- **Streamlit Web Interface**: User interface for company selection and chat
+- **Supabase Integration**: Stores and retrieves company data with Quartr IDs
+- **Quartr API Integration**: Fetches financial documents for selected companies
+- **Document Processing**: Converts and standardizes documents (especially transcripts)
+- **S3 Storage**: Stores processed documents for retrieval
+- **Multi-LLM Pipeline**:
+  - **Gemini AI**: Analyzes company documents 
+  - **Perplexity API**: Searches the web for current information
+  - **Claude AI**: Synthesizes all information into comprehensive responses
+- **Asynchronous Processing**: Runs tasks in parallel for optimal performance
+
+## Technical Implementation
+
+### Multi-LLM Chain
+The application implements a sophisticated multi-LLM chain:
+
+1. **First Stage** (Runs in Parallel):
+   - **Gemini 2.0 Flash**: Analyzes company documents retrieved from S3
+   - **Perplexity API**: Simultaneously searches the web for the most current information
+
+2. **Second Stage**:
+   - **Claude 3.7 Sonnet**: Synthesizes outputs from both sources, providing a comprehensive answer that combines historical company documents with current information
+
+### Performance Optimization
+- Perplexity API call starts immediately when a user query is submitted
+- Document processing and Gemini analysis run concurrently
+- Asynchronous operations with proper thread management
+- Detailed timing metrics for performance monitoring
 
 ## Prerequisites
 
@@ -26,6 +54,8 @@ The application consists of several components:
 - AWS account with S3 access
 - Quartr API key
 - Google Gemini API key
+- Perplexity API key
+- Anthropic Claude API key
 - Supabase account with table for company universe
 
 ## Setup
@@ -37,7 +67,7 @@ pip install -r requirements.txt
 ```
 
 3. Configure Streamlit secrets
-   Create a `.streamlit/secrets.toml` file locally for development (never commit this to version control) or use the Streamlit Cloud secrets management. The secrets should include:
+   Create a `.streamlit/secrets.toml` file locally for development or use the Streamlit Cloud secrets management. The secrets should include:
    ```
    AWS_ACCESS_KEY_ID = "your-aws-access-key"
    AWS_SECRET_ACCESS_KEY = "your-aws-secret-key"
@@ -45,6 +75,8 @@ pip install -r requirements.txt
    S3_BUCKET_NAME = "your-s3-bucket"
    QUARTR_API_KEY = "your-quartr-api-key"
    GEMINI_API_KEY = "your-gemini-api-key"
+   PERPLEXITY_API_KEY = "your-perplexity-api-key"
+   CLAUDE_API_KEY = "your-claude-api-key"
 
    [connections.supabase]
    url = "your-supabase-url"
@@ -59,7 +91,7 @@ pip install -r requirements.txt
    Create a 'universe' table in Supabase with the following structure:
    - Name: Company name
    - ISIN: Company ISIN code (for backward compatibility)
-   - QuartrID: Company ID from Quartr
+   - QuartrID: Company ID from Quartr (required for document fetching)
 
 ## Project Structure
 ```
@@ -67,6 +99,9 @@ financial-insights-chat/
 ├── app.py                 # Main Streamlit application
 ├── supabase_client.py     # Supabase integration for company data
 ├── utils.py               # Utility classes for API, S3, and document processing
+├── utils_helper.py        # Helper functions to resolve circular imports
+├── logging_config.py      # Logging configuration
+├── logger.py              # Logger instance used across the application
 ├── requirements.txt       # Python dependencies
 ├── .streamlit/            # Streamlit configuration
 │   └── secrets.toml       # Local secrets file (not committed to repository)
@@ -80,20 +115,22 @@ streamlit run app.py
 
 ## How It Works
 
-1. The user selects a company from the dropdown in the sidebar
-2. The app fetches the company's Quartr ID from Supabase
-3. The app fetches the latest financial documents from Quartr API using the company ID
-4. Documents are processed and uploaded to S3
-5. When the user asks a question, the app:
-   - Downloads the relevant documents from S3
-   - Sends them to Gemini AI along with the user's query
-   - Displays the AI-generated response with source information
+1. User selects a company from the dropdown in the sidebar
+2. App fetches the company's Quartr ID from Supabase
+3. When the user asks a question:
+   - Perplexity API call starts immediately to search the web
+   - In parallel, if not already fetched:
+     - App retrieves financial documents from Quartr API using the company ID
+     - Documents are processed and stored in S3
+   - Documents are downloaded from S3 and analyzed by Gemini
+   - Claude synthesizes information from both Gemini and Perplexity
+   - The comprehensive response is displayed with source information
 
-## Supabase Integration
+## Data Sources
 
-The app uses Streamlit's native Supabase SQL connector to fetch company data. The Supabase table should include:
-- Company names
-- ISIN codes (for backward compatibility)
-- Quartr IDs for each company
+The application leverages multiple data sources:
+- **Company Documents**: Financial reports, presentations, and call transcripts from Quartr
+- **Web Information**: Current news, analyses, and market data from Perplexity web search
+- **Company Database**: Structured company information from Supabase
 
-All API calls to Quartr are now made using Quartr IDs instead of ISIN codes for better compatibility with the Quartr API.
+This multi-source approach ensures comprehensive and up-to-date information for financial analysis.
