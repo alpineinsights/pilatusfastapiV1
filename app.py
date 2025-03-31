@@ -198,7 +198,7 @@ async def query_perplexity(query: str, company_name: str) -> str:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": query}
             ],
-            "max_tokens": 2000,
+            "max_tokens": 4000,
             "temperature": 0.2,
             "web_search_options": {"search_context_size": "high"}
         }
