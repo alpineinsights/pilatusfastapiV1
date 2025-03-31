@@ -758,7 +758,8 @@ def main():
                         # Format sources section
                         sources_section = "\n\n### Sources\n"
                         
-                        # Add document sources
+                        # Add document sources under "Company data" sub-header
+                        sources_section += "\n#### Company data\n"
                         for i, file_info in enumerate(st.session_state.processed_files, 1):
                             s3_url = file_info['s3_url']
                             
@@ -771,9 +772,9 @@ def main():
                                     filename = os.path.basename(key)
                                     sources_section += f"{i}. [{filename}]({https_url})\n"
                         
-                        # Add Perplexity attribution and citations
+                        # Add Perplexity attribution and citations under "Web sources" sub-header
+                        sources_section += "\n#### Web sources\n"
                         if perplexity_citations:
-                            sources_section += "\n**Web Sources (via Perplexity AI):**\n"
                             for i, citation in enumerate(perplexity_citations, 1):
                                 # Handle different citation formats
                                 if isinstance(citation, str):
@@ -801,7 +802,7 @@ def main():
                                             title = f"Source {i}"
                                     sources_section += f"{i}. [{title}]({url})\n"
                         else:
-                            sources_section += "\n*Additional context provided by Perplexity AI*"
+                            sources_section += "*No specific web sources cited by Perplexity AI*"
                         
                         # Combine response with sources
                         final_response = claude_response + sources_section
