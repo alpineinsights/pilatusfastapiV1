@@ -18,7 +18,12 @@ from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by
 import io
 import re
 import threading
-import fitz  # PyMuPDF
+# Try to import PyMuPDF (fitz), but don't fail if it's not available
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    # Log warning instead of failing
+    print("Warning: PyMuPDF (fitz) not installed. PDF generation functionality may be limited.")
 from anthropic import Anthropic
 from botocore.exceptions import NoCredentialsError
 from utils import process_company_documents, initialize_claude
