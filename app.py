@@ -177,11 +177,15 @@ def extract_valid_json(response: Dict[str, Any]) -> Dict[str, Any]:
         return {"content": json_str}
 
 # Function to call Perplexity API
-async def query_perplexity(query: str, company_name: str) -> str:
-    """Call Perplexity API with a financial analyst prompt for the specified company"""
+async def query_perplexity(query: str, company_name: str) -> Tuple[str, List[Dict]]:
+    """Call Perplexity API with a financial analyst prompt for the specified company
+    
+    Returns:
+        Tuple[str, List[Dict]]: The response content and a list of citation objects
+    """
     if not PERPLEXITY_API_KEY:
         logger.error("Perplexity API key not found")
-        return "Error: Perplexity API key not found"
+        return "Error: Perplexity API key not found", []
     
     try:
         logger.info(f"Perplexity API: Starting request for query about {company_name}")
@@ -198,7 +202,7 @@ async def query_perplexity(query: str, company_name: str) -> str:
                 {"role": "system", "content": prompt},
                 {"role": "user", "content": query}
             ],
-            "max_tokens": 4000,
+            "max_tokens": 2000,
             "temperature": 0.2,
             "web_search_options": {"search_context_size": "high"}
         }
@@ -215,7 +219,7 @@ async def query_perplexity(query: str, company_name: str) -> str:
                 if response.status != 200:
                     error_text = await response.text()
                     logger.error(f"Perplexity API returned error {response.status}: {error_text}")
-                    return f"Error: Perplexity API returned status {response.status}"
+                    return f"Error: Perplexity API returned status {response.status}", []
                 
                 logger.info("Perplexity API: Received response from server")
                 response_json = await response.json()
@@ -224,6 +228,18 @@ async def query_perplexity(query: str, company_name: str) -> str:
                 
                 # Log the raw response for debugging
                 logger.info(f"Perplexity API raw response structure: {list(response_json.keys())}")
+                
+                # Extract citations if present
+                citations = response_json.get("citations", [])
+                logger.info(f"Perplexity API: Found {len(citations)} citations")
+                # Log the format and content of the first few citations
+                if citations:
+                    logger.info(f"Citation type: {type(citations)}")
+                    for i, citation in enumerate(citations[:3]):  # Log first 3 citations
+                        logger.info(f"Citation {i} type: {type(citation)}")
+                        logger.info(f"Citation {i} content: {citation}")
+                else:
+                    logger.info("No citations found in Perplexity response")
                 
                 # Simplified extraction - just get the text content directly
                 if "choices" in response_json and len(response_json["choices"]) > 0:
@@ -234,21 +250,21 @@ async def query_perplexity(query: str, company_name: str) -> str:
                         if "</think>" in content:
                             content = content.split("</think>", 1)[1].strip()
                         
-                        return content
+                        return content, citations
                 
                 # Fallback if we couldn't extract the content using the above method
                 try:
                     parsed_content = extract_valid_json(response_json)
                     if isinstance(parsed_content, dict) and "content" in parsed_content:
-                        return parsed_content["content"]
-                    return str(parsed_content)
+                        return parsed_content["content"], citations
+                    return str(parsed_content), citations
                 except Exception as e:
                     logger.error(f"Error parsing Perplexity response: {e}")
-                    return "Error processing Perplexity response. Please check logs for details."
+                    return "Error processing Perplexity response. Please check logs for details.", []
     
     except Exception as e:
         logger.error(f"Error calling Perplexity API: {str(e)}")
-        return f"Error calling Perplexity API: {str(e)}"
+        return f"Error calling Perplexity API: {str(e)}", []
 
 # Function to call Claude with combined outputs
 def query_claude(query: str, company_name: str, gemini_output: str, perplexity_output: str) -> str:
@@ -707,12 +723,14 @@ def main():
                         logger.info("Waiting for Perplexity to complete (if not already finished)")
                         try:
                             # Get result with timeout
-                            perplexity_output = perplexity_future.result(timeout=60)
+                            perplexity_output, perplexity_citations = perplexity_future.result(timeout=60)
                             perplexity_duration = time.time() - start_time
                             logger.info(f"Completed Perplexity request in {perplexity_duration:.2f} seconds")
+                            logger.info(f"Perplexity returned {len(perplexity_citations)} citations")
                         except Exception as e:
                             logger.error(f"Error waiting for Perplexity task: {str(e)}")
                             perplexity_output = "Error: Perplexity API request timed out or failed."
+                            perplexity_citations = []
                         
                         # Clean up the perplexity thread
                         perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
@@ -753,8 +771,37 @@ def main():
                                     filename = os.path.basename(key)
                                     sources_section += f"{i}. [{filename}]({https_url})\n"
                         
-                        # Add Perplexity attribution
-                        sources_section += "\n*Additional context provided by Perplexity AI*"
+                        # Add Perplexity attribution and citations
+                        if perplexity_citations:
+                            sources_section += "\n**Web Sources (via Perplexity AI):**\n"
+                            for i, citation in enumerate(perplexity_citations, 1):
+                                # Handle different citation formats
+                                if isinstance(citation, str):
+                                    # If citation is just a URL string
+                                    url = citation
+                                    # Extract domain from URL if title is missing
+                                    try:
+                                        from urllib.parse import urlparse
+                                        domain = urlparse(url).netloc
+                                        title = domain
+                                    except:
+                                        title = f"Source {i}"
+                                    sources_section += f"{i}. [{title}]({url})\n"
+                                elif isinstance(citation, dict):
+                                    # If citation is a dictionary object
+                                    url = citation.get("url", "")
+                                    title = citation.get("title", "")
+                                    if not title:
+                                        # Extract domain from URL if title is missing
+                                        try:
+                                            from urllib.parse import urlparse
+                                            domain = urlparse(url).netloc
+                                            title = domain
+                                        except:
+                                            title = f"Source {i}"
+                                    sources_section += f"{i}. [{title}]({url})\n"
+                        else:
+                            sources_section += "\n*Additional context provided by Perplexity AI*"
                         
                         # Combine response with sources
                         final_response = claude_response + sources_section
