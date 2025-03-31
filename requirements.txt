@@ -22,7 +22,7 @@ Pillow==10.2.0
 google-generativeai==0.7.1
 
 # Claude SDK
-anthropic==0.19.1
+anthropic>=0.23.1
 
 # UI updates
 streamlit-autorefresh==1.0.1

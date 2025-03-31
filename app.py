@@ -100,7 +100,7 @@ def initialize_claude():
         return None
     
     try:
-        # Initialize the Claude client
+        # Initialize the Claude client with only required parameters
         client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
         return client
     except Exception as e:
@@ -193,31 +193,36 @@ async def query_perplexity(query: str, company_name: str) -> str:
         # Use aiohttp to make the request asynchronously
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload, headers=headers) as response:
+                if response.status != 200:
+                    error_text = await response.text()
+                    logger.error(f"Perplexity API returned error {response.status}: {error_text}")
+                    return f"Error: Perplexity API returned status {response.status}"
+                
                 response_json = await response.json()
                 
-                # Extract the valid JSON part of the response
+                # Log the raw response for debugging
+                logger.info(f"Perplexity API raw response structure: {list(response_json.keys())}")
+                
+                # Simplified extraction - just get the text content directly
+                if "choices" in response_json and len(response_json["choices"]) > 0:
+                    if "message" in response_json["choices"][0] and "content" in response_json["choices"][0]["message"]:
+                        content = response_json["choices"][0]["message"]["content"]
+                        
+                        # If content contains a </think> tag, extract everything after it
+                        if "</think>" in content:
+                            content = content.split("</think>", 1)[1].strip()
+                        
+                        return content
+                
+                # Fallback if we couldn't extract the content using the above method
                 try:
                     parsed_content = extract_valid_json(response_json)
-                    
-                    # If the extraction returned a dict with content key, use that
                     if isinstance(parsed_content, dict) and "content" in parsed_content:
                         return parsed_content["content"]
-                    
-                    # If it's a dict but without content, convert to string
-                    if isinstance(parsed_content, dict):
-                        return json.dumps(parsed_content, indent=2)
-                    
-                    # Fallback
                     return str(parsed_content)
                 except Exception as e:
-                    logger.error(f"Error extracting JSON from Perplexity response: {e}")
-                    
-                    # Fallback to returning the raw content from the first choice
-                    if (response_json and "choices" in response_json and 
-                        response_json["choices"] and "message" in response_json["choices"][0] and 
-                        "content" in response_json["choices"][0]["message"]):
-                        return response_json["choices"][0]["message"]["content"]
-                    return f"Error processing Perplexity response: {str(e)}"
+                    logger.error(f"Error parsing Perplexity response: {e}")
+                    return "Error processing Perplexity response. Please check logs for details."
     
     except Exception as e:
         logger.error(f"Error calling Perplexity API: {str(e)}")
@@ -258,7 +263,7 @@ PERPLEXITY OUTPUT (Based on web search):
 {perplexity_output}
 """
 
-        # Call Claude API
+        # Call Claude API with the updated model name
         message = client.messages.create(
             model="claude-3-7-sonnet-20250219",
             max_tokens=4000,
@@ -524,6 +529,12 @@ async def process_query_with_llm_chain(query: str, company_name: str, file_paths
         
         # Log completion of first-stage tasks
         logger.info("Completed first-stage LLM processing (Gemini and Perplexity)")
+        logger.info(f"Gemini output length: {len(gemini_output)} characters")
+        logger.info(f"Perplexity output length: {len(perplexity_output)} characters")
+        
+        # Add error handling if either API failed
+        if gemini_output.startswith("Error") and perplexity_output.startswith("Error"):
+            return "Both Gemini and Perplexity APIs failed. Please try again later."
         
         # Now process with Claude to synthesize the outputs
         claude_response = query_claude(query, company_name, gemini_output, perplexity_output)
