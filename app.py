@@ -27,7 +27,6 @@ except ImportError:
 from anthropic import Anthropic
 from botocore.exceptions import NoCredentialsError
 from utils_helper import process_company_documents, initialize_claude
-from supabase_client import get_company_by_name, get_quartr_id, get_company_isin
 from datetime import datetime
 from logging_config import setup_logging
 from logger import logger  # Import the configured logger

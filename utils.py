@@ -12,6 +12,7 @@ from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from typing import Dict, Optional, List
 import streamlit as st
+from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by_name, get_all_companies
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
