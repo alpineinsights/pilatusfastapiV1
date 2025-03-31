@@ -136,6 +136,10 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
                                 content = await response.read()
                                 original_filename = event.get('pdfUrl').split('/')[-1]
                                 
+                                # Remove any URL query parameters from the original filename
+                                if '?' in original_filename:
+                                    original_filename = original_filename.split('?')[0]
+                                
                                 filename = s3_handler.create_filename(
                                     company_name, event_date, event_title, 'slides', original_filename
                                 )
@@ -164,6 +168,10 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
                             if response.status == 200:
                                 content = await response.read()
                                 original_filename = event.get('reportUrl').split('/')[-1]
+                                
+                                # Remove any URL query parameters from the original filename
+                                if '?' in original_filename:
+                                    original_filename = original_filename.split('?')[0]
                                 
                                 filename = s3_handler.create_filename(
                                     company_name, event_date, event_title, 'report', original_filename

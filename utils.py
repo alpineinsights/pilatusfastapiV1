@@ -317,6 +317,11 @@ class S3Handler:
         clean_company = company_name.replace(" ", "_").replace("/", "_").lower()
         clean_event = event_title.replace(" ", "_").lower()
         clean_date = event_date.split("T")[0]
+        
+        # Remove any URL query parameters from the original filename
+        if '?' in original_filename:
+            original_filename = original_filename.split('?')[0]
+        
         # Always use PDF extension for transcripts
         file_extension = "pdf" if doc_type == "transcript" else original_filename.split(".")[-1].lower()
         return f"{clean_company}_{clean_date}_{clean_event}_{doc_type}.{file_extension}"
