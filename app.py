@@ -169,6 +169,9 @@ async def query_perplexity(query: str, company_name: str) -> str:
         return "Error: Perplexity API key not found"
     
     try:
+        logger.info(f"Perplexity API: Starting request for query about {company_name}")
+        start_time = time.time()
+        
         url = "https://api.perplexity.ai/chat/completions"
         
         # Create system prompt for financial analysis
@@ -192,13 +195,17 @@ async def query_perplexity(query: str, company_name: str) -> str:
         
         # Use aiohttp to make the request asynchronously
         async with aiohttp.ClientSession() as session:
+            logger.info("Perplexity API: Sending request to API server")
             async with session.post(url, json=payload, headers=headers) as response:
                 if response.status != 200:
                     error_text = await response.text()
                     logger.error(f"Perplexity API returned error {response.status}: {error_text}")
                     return f"Error: Perplexity API returned status {response.status}"
                 
+                logger.info("Perplexity API: Received response from server")
                 response_json = await response.json()
+                elapsed = time.time() - start_time
+                logger.info(f"Perplexity API: Response received in {elapsed:.2f} seconds")
                 
                 # Log the raw response for debugging
                 logger.info(f"Perplexity API raw response structure: {list(response_json.keys())}")
@@ -231,6 +238,9 @@ async def query_perplexity(query: str, company_name: str) -> str:
 # Function to call Claude with combined outputs
 def query_claude(query: str, company_name: str, gemini_output: str, perplexity_output: str) -> str:
     """Call Claude API with combined Gemini and Perplexity outputs for final synthesis"""
+    logger.info("Claude API: Starting synthesis process")
+    start_time = time.time()
+    
     client = initialize_claude()
     if not client:
         return "Error initializing Claude client"
@@ -262,7 +272,10 @@ GEMINI OUTPUT (Based on company documents):
 PERPLEXITY OUTPUT (Based on web search):
 {perplexity_output}
 """
-
+        
+        logger.info(f"Claude API: Sending request with prompt length {len(prompt)} characters")
+        api_start_time = time.time()
+        
         # Call Claude API with the updated model name
         message = client.messages.create(
             model="claude-3-7-sonnet-20250219",
@@ -274,7 +287,14 @@ PERPLEXITY OUTPUT (Based on web search):
             ]
         )
         
-        return message.content[0].text
+        api_time = time.time() - api_start_time
+        logger.info(f"Claude API: Received response in {api_time:.2f} seconds")
+        
+        response_text = message.content[0].text
+        total_time = time.time() - start_time
+        logger.info(f"Claude API: Total processing time: {total_time:.2f} seconds")
+        
+        return response_text
         
     except Exception as e:
         logger.error(f"Error calling Claude API: {str(e)}")
@@ -468,6 +488,9 @@ async def query_gemini_async(query: str, file_paths: List[str]) -> str:
 def query_gemini(query: str, file_paths: List[str]) -> str:
     """Query Gemini model with context from files"""
     try:
+        logger.info(f"Gemini API: Starting analysis with {len(file_paths)} documents")
+        start_time = time.time()
+        
         # Make sure Gemini is initialized
         if not initialize_gemini():
             return "Error initializing Gemini client"
@@ -485,6 +508,8 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
         contents = []
         
         # Add files to contents
+        logger.info("Gemini API: Processing document files")
+        file_start_time = time.time()
         for file_path in file_paths:
             try:
                 # Open the file and create a content part
@@ -500,6 +525,9 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
             except Exception as e:
                 st.error(f"Error processing file for Gemini: {str(e)}")
         
+        file_processing_time = time.time() - file_start_time
+        logger.info(f"Gemini API: Processed {len(contents)} files in {file_processing_time:.2f} seconds")
+        
         if not contents:
             return "No files were successfully processed for Gemini"
         
@@ -508,7 +536,14 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
         contents.append(prompt)
         
         # Generate content with files as context
+        logger.info("Gemini API: Sending request to API")
+        api_start_time = time.time()
         response = model.generate_content(contents)
+        api_time = time.time() - api_start_time
+        logger.info(f"Gemini API: Received response in {api_time:.2f} seconds")
+        
+        total_time = time.time() - start_time
+        logger.info(f"Gemini API: Total processing time: {total_time:.2f} seconds")
         
         # Return the response text
         return response.text
@@ -521,13 +556,22 @@ async def process_user_query(query: str, company_name: str, company_id: str, loc
     """Process user query with LLM chain, starting Perplexity call early"""
     try:
         # Start Perplexity API call immediately
+        logger.info("Starting Perplexity API call first")
+        start_time = time.time()
         perplexity_task = query_perplexity(query, company_name)
         
         # Run Gemini analysis on document files
+        logger.info("Starting Gemini analysis on documents while Perplexity runs in background")
+        gemini_start = time.time()
         gemini_output = query_gemini(query, local_files)
+        gemini_duration = time.time() - gemini_start
+        logger.info(f"Completed Gemini analysis in {gemini_duration:.2f} seconds")
         
         # Now wait for Perplexity to finish - it's already been running
+        logger.info("Waiting for Perplexity to complete (if not already finished)")
         perplexity_output = await perplexity_task
+        perplexity_duration = time.time() - start_time
+        logger.info(f"Completed Perplexity request in {perplexity_duration:.2f} seconds")
         
         # Log completion
         logger.info("Completed first-stage LLM processing (Gemini and Perplexity)")
@@ -539,7 +583,11 @@ async def process_user_query(query: str, company_name: str, company_id: str, loc
             return "Both Gemini and Perplexity APIs failed. Please try again later."
         
         # Process with Claude
+        logger.info("Starting final synthesis with Claude")
+        claude_start = time.time()
         claude_response = query_claude(query, company_name, gemini_output, perplexity_output)
+        claude_duration = time.time() - claude_start
+        logger.info(f"Completed Claude synthesis in {claude_duration:.2f} seconds")
         
         # Format sources
         sources_section = "\n\n### Sources\n"
@@ -562,6 +610,9 @@ async def process_user_query(query: str, company_name: str, company_id: str, loc
         
         # Combine response with sources
         final_response = claude_response + sources_section
+        
+        total_duration = time.time() - start_time
+        logger.info(f"Total processing time: {total_duration:.2f} seconds")
         
         return final_response
     except Exception as e:
