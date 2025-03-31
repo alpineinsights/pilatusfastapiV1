@@ -10,8 +10,10 @@ import logging
 from utils import QuartrAPI, S3Handler, TranscriptProcessor
 import aiohttp
 import asyncio
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any, Optional
 import json
+import anthropic
+import requests
 from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by_name, get_all_companies
 
 # Configure logging
@@ -50,6 +52,8 @@ try:
     # Access API keys directly from root level
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     QUARTR_API_KEY = st.secrets["QUARTR_API_KEY"]
+    PERPLEXITY_API_KEY = st.secrets["PERPLEXITY_API_KEY"]
+    CLAUDE_API_KEY = st.secrets["CLAUDE_API_KEY"]
     
     # For debugging
     st.sidebar.write("Available secret keys:", list(st.secrets.keys()))
@@ -62,6 +66,8 @@ except KeyError as e:
     S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "alpineinsights")
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
     QUARTR_API_KEY = os.environ.get("QUARTR_API_KEY", "")
+    PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY", "")
+    CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY", "")
 
 # Load company data from Supabase
 @st.cache_data(ttl=60*60)  # Cache for 1 hour
@@ -86,6 +92,188 @@ def initialize_gemini():
     except Exception as e:
         st.error(f"Error initializing Gemini: {str(e)}")
         return None
+
+# Initialize Claude client
+def initialize_claude():
+    if not CLAUDE_API_KEY:
+        st.error("Claude API key not found in Streamlit secrets")
+        return None
+    
+    try:
+        # Initialize the Claude client
+        client = anthropic.Anthropic(api_key=CLAUDE_API_KEY)
+        return client
+    except Exception as e:
+        st.error(f"Error initializing Claude: {str(e)}")
+        return None
+
+# Extract valid JSON from Perplexity response
+def extract_valid_json(response: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extracts and returns only the valid JSON part from a Perplexity response object.
+    
+    Parameters:
+        response (dict): The full API response object.
+
+    Returns:
+        dict: The parsed JSON object extracted from the content.
+    
+    Raises:
+        ValueError: If no valid JSON can be parsed from the content.
+    """
+    # Navigate to the 'content' field
+    content = (
+        response
+        .get("choices", [{}])[0]
+        .get("message", {})
+        .get("content", "")
+    )
+    
+    # Find the index of the closing </think> tag
+    marker = "</think>"
+    idx = content.rfind(marker)
+    
+    if idx == -1:
+        # If marker not found, try parsing the entire content
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as e:
+            logger.warning("No </think> marker found and content is not valid JSON")
+            # Return the raw content if it can't be parsed as JSON
+            return {"content": content}
+    
+    # Extract the substring after the marker
+    json_str = content[idx + len(marker):].strip()
+    
+    # Remove markdown code fence markers if present
+    if json_str.startswith("```json"):
+        json_str = json_str[len("```json"):].strip()
+    if json_str.startswith("```"):
+        json_str = json_str[3:].strip()
+    if json_str.endswith("```"):
+        json_str = json_str[:-3].strip()
+    
+    try:
+        parsed_json = json.loads(json_str)
+        return parsed_json
+    except json.JSONDecodeError as e:
+        logger.warning(f"Failed to parse valid JSON from response content: {e}")
+        # Return the raw content after </think> if it can't be parsed as JSON
+        return {"content": json_str}
+
+# Function to call Perplexity API
+async def query_perplexity(query: str, company_name: str) -> str:
+    """Call Perplexity API with a financial analyst prompt for the specified company"""
+    if not PERPLEXITY_API_KEY:
+        logger.error("Perplexity API key not found")
+        return "Error: Perplexity API key not found"
+    
+    try:
+        url = "https://api.perplexity.ai/chat/completions"
+        
+        # Create system prompt for financial analysis
+        prompt = f"You are a senior financial analyst on listed equities. Here is a question on {company_name}: {query}. Give a comprehensive and detailed response. Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation."
+        
+        payload = {
+            "model": "sonar-reasoning-pro",
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": query}
+            ],
+            "max_tokens": 2000,
+            "temperature": 0.2,
+            "web_search_options": {"search_context_size": "high"}
+        }
+        
+        headers = {
+            "Authorization": f"Bearer {PERPLEXITY_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        # Use aiohttp to make the request asynchronously
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload, headers=headers) as response:
+                response_json = await response.json()
+                
+                # Extract the valid JSON part of the response
+                try:
+                    parsed_content = extract_valid_json(response_json)
+                    
+                    # If the extraction returned a dict with content key, use that
+                    if isinstance(parsed_content, dict) and "content" in parsed_content:
+                        return parsed_content["content"]
+                    
+                    # If it's a dict but without content, convert to string
+                    if isinstance(parsed_content, dict):
+                        return json.dumps(parsed_content, indent=2)
+                    
+                    # Fallback
+                    return str(parsed_content)
+                except Exception as e:
+                    logger.error(f"Error extracting JSON from Perplexity response: {e}")
+                    
+                    # Fallback to returning the raw content from the first choice
+                    if (response_json and "choices" in response_json and 
+                        response_json["choices"] and "message" in response_json["choices"][0] and 
+                        "content" in response_json["choices"][0]["message"]):
+                        return response_json["choices"][0]["message"]["content"]
+                    return f"Error processing Perplexity response: {str(e)}"
+    
+    except Exception as e:
+        logger.error(f"Error calling Perplexity API: {str(e)}")
+        return f"Error calling Perplexity API: {str(e)}"
+
+# Function to call Claude with combined outputs
+def query_claude(query: str, company_name: str, gemini_output: str, perplexity_output: str) -> str:
+    """Call Claude API with combined Gemini and Perplexity outputs for final synthesis"""
+    client = initialize_claude()
+    if not client:
+        return "Error initializing Claude client"
+    
+    try:
+        # Create prompt for Claude
+        prompt = f"""You are a senior financial analyst on listed equities. Here is a question on {company_name}: {query}. 
+Give a comprehensive and detailed response using ONLY the context provided below. Do not use your general knowledge or the Internet. 
+If you encounter conflicting information between sources, prioritize the most recent source unless there's a specific reason not to (e.g., if the newer source explicitly references and validates the older information).
+If the most recent available data is more than 6 months old, explicitly mention this in your response and caution that more recent developments may not be reflected in your analysis.
+Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation.
+
+Tone and format:
+- Provide clear, detailed, and accurate information tailored to professional investors.
+- When appropriate, for instance when the response involves a lot of figures, format your response in a table.
+- If there are conflicting views or data points in different sources, acknowledge this and provide a balanced perspective.
+- When appropriate, highlight any potential risks, opportunities, or trends that may not be explicitly stated in the query but are relevant to the analysis.
+- If you don't have sufficient information to answer a query comprehensively, state this clearly and provide the best analysis possible with the available data.
+- Be prepared to explain financial metrics, ratios, or industry-specific terms if requested.
+- Maintain a professional and objective tone throughout your responses.
+
+Remember, your goal is to provide valuable, data-driven insights that can aid professional investors in their decision-making process regarding the selected company, leveraging ONLY the provided context and NEVER using training data from your general knowledge.
+
+Here is the context:
+
+GEMINI OUTPUT (Based on company documents):
+{gemini_output}
+
+PERPLEXITY OUTPUT (Based on web search):
+{perplexity_output}
+"""
+
+        # Call Claude API
+        message = client.messages.create(
+            model="claude-3-7-sonnet-20250219",
+            max_tokens=4000,
+            temperature=0.2,
+            system="You are a senior financial analyst providing detailed analysis for professional investors.",
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
+        
+        return message.content[0].text
+        
+    except Exception as e:
+        logger.error(f"Error calling Claude API: {str(e)}")
+        return f"Error calling Claude API: {str(e)}"
 
 # Function to process company documents
 async def process_company_documents(company_id: str, company_name: str, event_type: str = "all") -> List[Dict]:
@@ -267,6 +455,11 @@ def download_files_from_s3(file_infos: List[Dict]) -> List[str]:
     return local_files
 
 # Function to query Gemini with file context
+async def query_gemini_async(query: str, file_paths: List[str]) -> str:
+    """Query Gemini model with context from files (async version)"""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: query_gemini(query, file_paths))
+
 def query_gemini(query: str, file_paths: List[str]) -> str:
     """Query Gemini model with context from files"""
     try:
@@ -317,6 +510,58 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
     except Exception as e:
         st.error(f"Error querying Gemini: {str(e)}")
         return f"An error occurred while processing your query: {str(e)}"
+
+# Process query using the multi-LLM chain
+async def process_query_with_llm_chain(query: str, company_name: str, file_paths: List[str]) -> str:
+    """Process query through the multi-step LLM chain: Gemini + Perplexity → Claude"""
+    try:
+        # Run Gemini and Perplexity tasks concurrently
+        gemini_task = query_gemini_async(query, file_paths)
+        perplexity_task = query_perplexity(query, company_name)
+        
+        # Wait for both tasks to complete
+        gemini_output, perplexity_output = await asyncio.gather(gemini_task, perplexity_task)
+        
+        # Log completion of first-stage tasks
+        logger.info("Completed first-stage LLM processing (Gemini and Perplexity)")
+        
+        # Now process with Claude to synthesize the outputs
+        claude_response = query_claude(query, company_name, gemini_output, perplexity_output)
+        
+        # Format the sources section and add to Claude's response
+        sources_section = "\n\n### Sources\n"
+        
+        # First add document sources
+        for i, file_info in enumerate(st.session_state.processed_files, 1):
+            # Parse the s3:// URL to get bucket and key
+            s3_url = file_info['s3_url']
+            
+            # Extract bucket and key from s3:// URL
+            if s3_url.startswith('s3://'):
+                # Remove the 's3://' prefix
+                s3_path = s3_url[5:]
+                # Split into bucket and key
+                parts = s3_path.split('/', 1)
+                if len(parts) == 2:
+                    bucket, key = parts
+                    # Create the https URL
+                    https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
+                    
+                    # Use the key as the filename (last part of the path)
+                    filename = os.path.basename(key)
+                    
+                    sources_section += f"{i}. [{filename}]({https_url})\n"
+        
+        # Add a note about Perplexity for transparency
+        sources_section += "\n*Additional context provided by Perplexity AI*"
+        
+        # Combine Claude's response with the sources
+        final_response = claude_response + sources_section
+        
+        return final_response
+    except Exception as e:
+        logger.error(f"Error in multi-LLM processing chain: {str(e)}")
+        return f"Error in processing: {str(e)}"
 
 # Main UI components
 def main():
@@ -408,7 +653,7 @@ def main():
             
             # Process the user query with the fetched documents
             if st.session_state.processed_files:
-                with st.spinner("Processing your query with Gemini..."):
+                with st.spinner("Processing your query with multiple AI models..."):
                     # Download files from S3
                     local_files = download_files_from_s3(st.session_state.processed_files)
                     
@@ -418,37 +663,12 @@ def main():
                         st.session_state.chat_history.append({"role": "assistant", "content": response})
                         return
                     
-                    # Query Gemini with file context
-                    response = query_gemini(query, local_files)
-                    
-                    # Add sources section using S3 URLs from session state
-                    response += "\n\n### Sources\n"
-                    for i, file_info in enumerate(st.session_state.processed_files, 1):
-                        # Parse the s3:// URL to get bucket and key
-                        s3_url = file_info['s3_url']
-                        
-                        # Extract bucket and key from s3:// URL
-                        if s3_url.startswith('s3://'):
-                            # Remove the 's3://' prefix
-                            s3_path = s3_url[5:]
-                            # Split into bucket and key
-                            parts = s3_path.split('/', 1)
-                            if len(parts) == 2:
-                                bucket, key = parts
-                                # Create the https URL
-                                https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
-                                
-                                # Use the key as the filename (last part of the path)
-                                filename = os.path.basename(key)
-                                
-                                response += f"{i}. [{filename}]({https_url})\n"
-                            else:
-                                # Fallback if URL can't be parsed
-                                response += f"{i}. [Document {i}]({s3_url})\n"
-                        else:
-                            # If not an s3:// URL, use as is
-                            filename = os.path.basename(s3_url)
-                            response += f"{i}. [{filename}]({s3_url})\n"
+                    # Process with multi-LLM chain
+                    response = asyncio.run(process_query_with_llm_chain(
+                        query, 
+                        st.session_state.company_data['name'],
+                        local_files
+                    ))
                     
                     # Display response with sources
                     response_placeholder.markdown(response)
