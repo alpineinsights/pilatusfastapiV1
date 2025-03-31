@@ -57,22 +57,18 @@ class QuartrAPI:
         
         try:
             logger.info(f"Requesting earlier events from Quartr API for company ID: {company_id}")
+            
             async with session.get(url, headers=self.headers, params=params) as response:
                 if response.status == 200:
                     data = await response.json()
                     logger.info(f"Successfully retrieved earlier events for company ID: {company_id}")
                     
-                    # Extract company information from the first event if available
-                    if data.get('data') and len(data['data']) > 0:
-                        company_name = data.get('data', [])[0].get('companyName', 'Unknown Company')
-                        events = data.get('data', [])
-                        
-                        # Transform the response to match the expected format in the app
-                        return {
-                            'displayName': company_name,
-                            'events': events
-                        }
-                    return {}
+                    events = data.get('data', [])
+                    
+                    # Return the events data only
+                    return {
+                        'events': events
+                    }
                 else:
                     response_text = await response.text()
                     logger.error(f"Error fetching earlier events for company ID {company_id}: Status {response.status}, Response: {response_text}")
@@ -80,6 +76,18 @@ class QuartrAPI:
         except Exception as e:
             logger.error(f"Exception while fetching earlier events for company ID {company_id}: {str(e)}")
             return {}
+
+    async def _get_company_name_direct(self, company_id: str, session: aiohttp.ClientSession) -> str:
+        """Direct method to get company name only"""
+        try:
+            url = f"{self.base_url}/companies/{company_id}"
+            async with session.get(url, headers=self.headers) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    return data.get('displayName', f"Company-{company_id}")
+                return f"Company-{company_id}"
+        except Exception:
+            return f"Company-{company_id}"
     
     async def get_company_info(self, company_id: str, session: aiohttp.ClientSession) -> Dict:
         """Get basic company information using company ID"""

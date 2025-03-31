@@ -88,7 +88,7 @@ def initialize_gemini():
         return None
 
 # Function to process company documents
-async def process_company_documents(company_id: str, event_type: str = "all") -> List[Dict]:
+async def process_company_documents(company_id: str, company_name: str, event_type: str = "all") -> List[Dict]:
     """Process company documents and return list of file information"""
     try:
         async with aiohttp.ClientSession() as session:
@@ -100,11 +100,17 @@ async def process_company_documents(company_id: str, event_type: str = "all") ->
             # Get company data from Quartr API using company ID
             company_data = await quartr_api.get_company_events(company_id, session, event_type)
             if not company_data:
+                logger.error(f"Failed to get company data for ID: {company_id}")
                 return []
             
-            company_name = company_data.get('displayName', 'Unknown Company')
+            # Use the company name passed in directly from Supabase
+            logger.info(f"Processing documents for company: {company_name} (ID: {company_id})")
+                
             events = company_data.get('events', [])
-            
+            if not events:
+                logger.warning(f"No events found for company: {company_name} (ID: {company_id})")
+                return []
+                
             # Sort events by date (descending) - should already be sorted, but just to be sure
             events.sort(key=lambda x: x.get('eventDate', ''), reverse=True)
             
@@ -382,7 +388,7 @@ def main():
                         return
                         
                     # Process company documents using the Quartr ID
-                    processed_files = asyncio.run(process_company_documents(quartr_id))
+                    processed_files = asyncio.run(process_company_documents(quartr_id, st.session_state.company_data['name']))
                     st.session_state.processed_files = processed_files
                     st.session_state.documents_fetched = True
                     
