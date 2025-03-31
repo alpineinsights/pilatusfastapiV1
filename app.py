@@ -26,7 +26,7 @@ except ImportError:
     print("Warning: PyMuPDF (fitz) not installed. PDF generation functionality may be limited.")
 from anthropic import Anthropic
 from botocore.exceptions import NoCredentialsError
-from utils import process_company_documents, initialize_claude
+from utils_helper import process_company_documents, initialize_claude
 from supabase_client import get_company_by_name, get_quartr_id, get_company_isin
 from datetime import datetime
 from logging_config import setup_logging
