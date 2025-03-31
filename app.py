@@ -6,12 +6,16 @@ import tempfile
 import uuid
 import google.generativeai as genai
 import time
+import logging
 from utils import QuartrAPI, S3Handler, TranscriptProcessor
 import aiohttp
 import asyncio
 from typing import List, Dict, Tuple
 import json
 from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by_name, get_all_companies
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 # Set page configuration
 st.set_page_config(
