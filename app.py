@@ -640,6 +640,12 @@ def main():
                 st.session_state.chat_history.append({"role": "assistant", "content": response})
                 return
             
+            # Start Perplexity query immediately - it doesn't need documents
+            # This runs in parallel with document fetching/processing
+            perplexity_task = asyncio.create_task(
+                query_perplexity(query, st.session_state.company_data['name'])
+            )
+            
             # Fetch documents if not already fetched
             if not st.session_state.documents_fetched:
                 with st.spinner(f"Fetching documents for {st.session_state.company_data['name']}..."):
@@ -674,18 +680,62 @@ def main():
                         st.session_state.chat_history.append({"role": "assistant", "content": response})
                         return
                     
-                    # Process with multi-LLM chain
-                    response = asyncio.run(process_query_with_llm_chain(
-                        query, 
-                        st.session_state.company_data['name'],
-                        local_files
-                    ))
+                    # Now that we have the documents, run Gemini analysis
+                    gemini_output = query_gemini(query, local_files)
+                    
+                    # Wait for Perplexity to finish if it hasn't already
+                    perplexity_output = asyncio.run(asyncio.wait_for(perplexity_task, timeout=60))
+                    
+                    # Log completion of first-stage tasks
+                    logger.info("Completed first-stage LLM processing (Gemini and Perplexity)")
+                    logger.info(f"Gemini output length: {len(gemini_output)} characters")
+                    logger.info(f"Perplexity output length: {len(perplexity_output)} characters")
+                    
+                    # Add error handling if either API failed
+                    if gemini_output.startswith("Error") and perplexity_output.startswith("Error"):
+                        response = "Both Gemini and Perplexity APIs failed. Please try again later."
+                        response_placeholder.markdown(response)
+                        st.session_state.chat_history.append({"role": "assistant", "content": response})
+                        return
+                    
+                    # Now process with Claude to synthesize the outputs
+                    claude_response = query_claude(query, st.session_state.company_data['name'], gemini_output, perplexity_output)
+                    
+                    # Format the sources section and add to Claude's response
+                    sources_section = "\n\n### Sources\n"
+                    
+                    # First add document sources
+                    for i, file_info in enumerate(st.session_state.processed_files, 1):
+                        # Parse the s3:// URL to get bucket and key
+                        s3_url = file_info['s3_url']
+                        
+                        # Extract bucket and key from s3:// URL
+                        if s3_url.startswith('s3://'):
+                            # Remove the 's3://' prefix
+                            s3_path = s3_url[5:]
+                            # Split into bucket and key
+                            parts = s3_path.split('/', 1)
+                            if len(parts) == 2:
+                                bucket, key = parts
+                                # Create the https URL
+                                https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
+                                
+                                # Use the key as the filename (last part of the path)
+                                filename = os.path.basename(key)
+                                
+                                sources_section += f"{i}. [{filename}]({https_url})\n"
+                    
+                    # Add a note about Perplexity for transparency
+                    sources_section += "\n*Additional context provided by Perplexity AI*"
+                    
+                    # Combine Claude's response with the sources
+                    final_response = claude_response + sources_section
                     
                     # Display response with sources
-                    response_placeholder.markdown(response)
+                    response_placeholder.markdown(final_response)
                     
                     # Add assistant response to chat history
-                    st.session_state.chat_history.append({"role": "assistant", "content": response})
+                    st.session_state.chat_history.append({"role": "assistant", "content": final_response})
             else:
                 response = "No documents are available for this company. Please try another company."
                 response_placeholder.markdown(response)
