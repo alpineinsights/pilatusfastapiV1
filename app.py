@@ -15,6 +15,17 @@ import json
 import anthropic
 import requests
 from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by_name, get_all_companies
+import io
+import re
+import threading
+import fitz  # PyMuPDF
+from anthropic import Anthropic
+from botocore.exceptions import NoCredentialsError
+from utils import process_company_documents, initialize_claude
+from supabase_client import get_company_by_name, get_quartr_id, get_company_isin
+from datetime import datetime
+from logging_config import setup_logging
+from logger import logger  # Import the configured logger
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -551,74 +562,6 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
         st.error(f"Error querying Gemini: {str(e)}")
         return f"An error occurred while processing your query: {str(e)}"
 
-# Process user query with early Perplexity call and parallel document processing
-async def process_user_query(query: str, company_name: str, company_id: str, local_files: List[str]) -> str:
-    """Process user query with LLM chain, starting Perplexity call early"""
-    try:
-        # Start Perplexity API call immediately
-        logger.info("Starting Perplexity API call first")
-        start_time = time.time()
-        perplexity_task = query_perplexity(query, company_name)
-        
-        # Run Gemini analysis on document files
-        logger.info("Starting Gemini analysis on documents while Perplexity runs in background")
-        gemini_start = time.time()
-        gemini_output = query_gemini(query, local_files)
-        gemini_duration = time.time() - gemini_start
-        logger.info(f"Completed Gemini analysis in {gemini_duration:.2f} seconds")
-        
-        # Now wait for Perplexity to finish - it's already been running
-        logger.info("Waiting for Perplexity to complete (if not already finished)")
-        perplexity_output = await perplexity_task
-        perplexity_duration = time.time() - start_time
-        logger.info(f"Completed Perplexity request in {perplexity_duration:.2f} seconds")
-        
-        # Log completion
-        logger.info("Completed first-stage LLM processing (Gemini and Perplexity)")
-        logger.info(f"Gemini output length: {len(gemini_output)} characters")
-        logger.info(f"Perplexity output length: {len(perplexity_output)} characters")
-        
-        # Error handling
-        if gemini_output.startswith("Error") and perplexity_output.startswith("Error"):
-            return "Both Gemini and Perplexity APIs failed. Please try again later."
-        
-        # Process with Claude
-        logger.info("Starting final synthesis with Claude")
-        claude_start = time.time()
-        claude_response = query_claude(query, company_name, gemini_output, perplexity_output)
-        claude_duration = time.time() - claude_start
-        logger.info(f"Completed Claude synthesis in {claude_duration:.2f} seconds")
-        
-        # Format sources
-        sources_section = "\n\n### Sources\n"
-        
-        # Add document sources
-        for i, file_info in enumerate(st.session_state.processed_files, 1):
-            s3_url = file_info['s3_url']
-            
-            if s3_url.startswith('s3://'):
-                s3_path = s3_url[5:]
-                parts = s3_path.split('/', 1)
-                if len(parts) == 2:
-                    bucket, key = parts
-                    https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
-                    filename = os.path.basename(key)
-                    sources_section += f"{i}. [{filename}]({https_url})\n"
-        
-        # Add Perplexity attribution
-        sources_section += "\n*Additional context provided by Perplexity AI*"
-        
-        # Combine response with sources
-        final_response = claude_response + sources_section
-        
-        total_duration = time.time() - start_time
-        logger.info(f"Total processing time: {total_duration:.2f} seconds")
-        
-        return final_response
-    except Exception as e:
-        logger.error(f"Error in processing chain: {str(e)}")
-        return f"Error in processing: {str(e)}"
-
 # Main UI components
 def main():
     st.title("Financial Insights Chat")
@@ -685,54 +628,158 @@ def main():
                 st.session_state.chat_history.append({"role": "assistant", "content": response})
                 return
             
-            # Fetch documents if not already fetched
-            if not st.session_state.documents_fetched:
-                with st.spinner(f"Fetching documents for {st.session_state.company_data['name']}..."):
-                    # Use Quartr ID to fetch documents instead of ISIN
-                    quartr_id = st.session_state.company_data['quartr_id']
-                    if not quartr_id:
-                        response = "No Quartr ID found for this company. Please select another company."
-                        response_placeholder.markdown(response)
-                        st.session_state.chat_history.append({"role": "assistant", "content": response})
-                        return
-                        
-                    # Process company documents using the Quartr ID
-                    processed_files = asyncio.run(process_company_documents(quartr_id, st.session_state.company_data['name']))
-                    st.session_state.processed_files = processed_files
-                    st.session_state.documents_fetched = True
-                    
-                    if not processed_files:
-                        response = "No documents found for this company. Please try another company or check your Quartr API key."
-                        response_placeholder.markdown(response)
-                        st.session_state.chat_history.append({"role": "assistant", "content": response})
-                        return
+            # Get company name for Perplexity
+            company_name = st.session_state.company_data['name']
             
-            # Process the user query with the fetched documents
-            if st.session_state.processed_files:
-                with st.spinner("Processing your query with multiple AI models..."):
-                    # Download files from S3
-                    local_files = download_files_from_s3(st.session_state.processed_files)
-                    
-                    if not local_files:
-                        response = "Error downloading files from S3. Please check your AWS credentials."
-                        response_placeholder.markdown(response)
-                        st.session_state.chat_history.append({"role": "assistant", "content": response})
-                        return
-                    
-                    # Process with the LLM chain using our new async function
-                    company_name = st.session_state.company_data['name']
-                    company_id = st.session_state.company_data['quartr_id']
-                    response = asyncio.run(process_user_query(query, company_name, company_id, local_files))
-                    
-                    # Display response with sources
+            # Create an event loop in a new thread for Perplexity
+            perplexity_loop = asyncio.new_event_loop()
+            
+            # Define a function to run the Perplexity query in a separate thread
+            def run_perplexity_query():
+                asyncio.set_event_loop(perplexity_loop)
+                perplexity_loop.run_forever()
+            
+            # Start the perplexity thread
+            perplexity_thread = threading.Thread(target=run_perplexity_query, daemon=True)
+            perplexity_thread.start()
+            
+            # Start Perplexity API call immediately
+            logger.info(f"Starting Perplexity API call immediately for query about {company_name}")
+            start_time = time.time()
+            perplexity_future = asyncio.run_coroutine_threadsafe(query_perplexity(query, company_name), perplexity_loop)
+            
+            try:
+                # Fetch documents if not already fetched
+                if not st.session_state.documents_fetched:
+                    with st.spinner(f"Fetching documents for {st.session_state.company_data['name']}..."):
+                        # Use Quartr ID to fetch documents instead of ISIN
+                        quartr_id = st.session_state.company_data['quartr_id']
+                        if not quartr_id:
+                            response = "No Quartr ID found for this company. Please select another company."
+                            response_placeholder.markdown(response)
+                            st.session_state.chat_history.append({"role": "assistant", "content": response})
+                            # Clean up
+                            perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
+                            perplexity_thread.join(timeout=1.0)
+                            return
+                            
+                        # Process company documents using the Quartr ID
+                        processed_files = asyncio.run(process_company_documents(quartr_id, st.session_state.company_data['name']))
+                        st.session_state.processed_files = processed_files
+                        st.session_state.documents_fetched = True
+                        
+                        if not processed_files:
+                            response = "No documents found for this company. Please try another company or check your Quartr API key."
+                            response_placeholder.markdown(response)
+                            st.session_state.chat_history.append({"role": "assistant", "content": response})
+                            # Clean up
+                            perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
+                            perplexity_thread.join(timeout=1.0)
+                            return
+                
+                # Process the user query with the fetched documents
+                if st.session_state.processed_files:
+                    with st.spinner("Processing your query with multiple AI models..."):
+                        # Download files from S3
+                        local_files = download_files_from_s3(st.session_state.processed_files)
+                        
+                        if not local_files:
+                            response = "Error downloading files from S3. Please check your AWS credentials."
+                            response_placeholder.markdown(response)
+                            st.session_state.chat_history.append({"role": "assistant", "content": response})
+                            # Clean up
+                            perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
+                            perplexity_thread.join(timeout=1.0)
+                            return
+                        
+                        # Run Gemini analysis on documents
+                        logger.info("Starting Gemini analysis on documents")
+                        gemini_start = time.time()
+                        gemini_output = query_gemini(query, local_files)
+                        gemini_duration = time.time() - gemini_start
+                        logger.info(f"Completed Gemini analysis in {gemini_duration:.2f} seconds")
+                        
+                        # Wait for Perplexity to complete (it's been running since the beginning)
+                        logger.info("Waiting for Perplexity to complete (if not already finished)")
+                        try:
+                            # Get result with timeout
+                            perplexity_output = perplexity_future.result(timeout=60)
+                            perplexity_duration = time.time() - start_time
+                            logger.info(f"Completed Perplexity request in {perplexity_duration:.2f} seconds")
+                        except Exception as e:
+                            logger.error(f"Error waiting for Perplexity task: {str(e)}")
+                            perplexity_output = "Error: Perplexity API request timed out or failed."
+                        
+                        # Clean up the perplexity thread
+                        perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
+                        perplexity_thread.join(timeout=1.0)
+                        
+                        # Log completion 
+                        logger.info("Completed first-stage LLM processing (Gemini and Perplexity)")
+                        logger.info(f"Gemini output length: {len(gemini_output)} characters")
+                        logger.info(f"Perplexity output length: {len(perplexity_output)} characters")
+                        
+                        # Error handling
+                        if gemini_output.startswith("Error") and perplexity_output.startswith("Error"):
+                            response = "Both Gemini and Perplexity APIs failed. Please try again later."
+                            response_placeholder.markdown(response)
+                            st.session_state.chat_history.append({"role": "assistant", "content": response})
+                            return
+                        
+                        # Process with Claude
+                        logger.info("Starting final synthesis with Claude")
+                        claude_start = time.time()
+                        claude_response = query_claude(query, company_name, gemini_output, perplexity_output)
+                        claude_duration = time.time() - claude_start
+                        logger.info(f"Completed Claude synthesis in {claude_duration:.2f} seconds")
+                        
+                        # Format sources section
+                        sources_section = "\n\n### Sources\n"
+                        
+                        # Add document sources
+                        for i, file_info in enumerate(st.session_state.processed_files, 1):
+                            s3_url = file_info['s3_url']
+                            
+                            if s3_url.startswith('s3://'):
+                                s3_path = s3_url[5:]
+                                parts = s3_path.split('/', 1)
+                                if len(parts) == 2:
+                                    bucket, key = parts
+                                    https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
+                                    filename = os.path.basename(key)
+                                    sources_section += f"{i}. [{filename}]({https_url})\n"
+                        
+                        # Add Perplexity attribution
+                        sources_section += "\n*Additional context provided by Perplexity AI*"
+                        
+                        # Combine response with sources
+                        final_response = claude_response + sources_section
+                        
+                        # Calculate total processing time
+                        total_duration = time.time() - start_time
+                        logger.info(f"Total processing time: {total_duration:.2f} seconds")
+                        
+                        # Display response with sources
+                        response_placeholder.markdown(final_response)
+                        
+                        # Add assistant response to chat history
+                        st.session_state.chat_history.append({"role": "assistant", "content": final_response})
+                else:
+                    response = "No documents are available for this company. Please try another company."
                     response_placeholder.markdown(response)
-                    
-                    # Add assistant response to chat history
                     st.session_state.chat_history.append({"role": "assistant", "content": response})
-            else:
-                response = "No documents are available for this company. Please try another company."
+                    # Clean up
+                    perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
+                    perplexity_thread.join(timeout=1.0)
+            except Exception as e:
+                # Handle any unexpected errors
+                logger.error(f"Unexpected error during processing: {str(e)}")
+                response = f"An unexpected error occurred: {str(e)}"
                 response_placeholder.markdown(response)
                 st.session_state.chat_history.append({"role": "assistant", "content": response})
+                # Clean up
+                perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
+                perplexity_thread.join(timeout=1.0)
 
 if __name__ == "__main__":
     main()
