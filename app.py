@@ -209,14 +209,17 @@ async def query_perplexity(query: str, company_name: str, conversation_context=N
                 conversation_history += f"Question: {entry['query']}\n"
                 conversation_history += f"Answer: {entry['summary']}\n\n"
         
-        # Create system prompt for financial analysis with conversation history
-        prompt = f"You are a senior financial analyst on listed equities. Here is a question on {company_name}: {query}. Give a comprehensive and detailed response. Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation.\n\n{conversation_history}"
+        # Create system prompt for financial analysis instructions only
+        system_prompt = "You are a senior financial analyst on listed equities. Give comprehensive and detailed responses. Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation."
+        
+        # Create user message with research context and the original query
+        user_message = f"I am doing research on this listed company: {company_name}\n\n{query}\n\n{conversation_history}"
         
         payload = {
             "model": "sonar-reasoning-pro",
             "messages": [
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": query}
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
             ],
             "max_tokens": 2000,
             "temperature": 0.2,
