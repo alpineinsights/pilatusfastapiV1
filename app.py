@@ -56,6 +56,8 @@ if "company_data" not in st.session_state:
     st.session_state.company_data = None
 if "documents_fetched" not in st.session_state:
     st.session_state.documents_fetched = False
+if "conversation_context" not in st.session_state:
+    st.session_state.conversation_context = []
 
 # Load credentials from Streamlit secrets - using flat structure
 try:
@@ -194,8 +196,16 @@ async def query_perplexity(query: str, company_name: str) -> Tuple[str, List[Dic
         
         url = "https://api.perplexity.ai/chat/completions"
         
-        # Create system prompt for financial analysis
-        prompt = f"You are a senior financial analyst on listed equities. Here is a question on {company_name}: {query}. Give a comprehensive and detailed response. Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation."
+        # Build conversation history for context
+        conversation_history = ""
+        if st.session_state.conversation_context:
+            conversation_history = "Previous conversation:\n"
+            for entry in st.session_state.conversation_context:
+                conversation_history += f"Question: {entry['query']}\n"
+                conversation_history += f"Answer: {entry['summary']}\n\n"
+        
+        # Create system prompt for financial analysis with conversation history
+        prompt = f"You are a senior financial analyst on listed equities. Here is a question on {company_name}: {query}. Give a comprehensive and detailed response. Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation.\n\n{conversation_history}"
         
         payload = {
             "model": "sonar-reasoning-pro",
@@ -291,12 +301,20 @@ def query_claude(query: str, company_name: str, gemini_output: str, perplexity_o
         return "Error initializing Claude client"
     
     try:
+        # Build conversation history for context
+        conversation_history = ""
+        if st.session_state.conversation_context:
+            conversation_history = "\n\nPREVIOUS CONVERSATION CONTEXT:\n"
+            for entry in st.session_state.conversation_context:
+                conversation_history += f"Question: {entry['query']}\n"
+                conversation_history += f"Answer: {entry['summary']}\n\n"
+        
         # Create prompt for Claude
         prompt = f"""You are a senior financial analyst on listed equities. Here is a question on {company_name}: {query}. 
 Give a comprehensive and detailed response using ONLY the context provided below. Do not use your general knowledge or the Internet. 
 If you encounter conflicting information between sources, prioritize the most recent source unless there's a specific reason not to (e.g., if the newer source explicitly references and validates the older information).
 If the most recent available data is more than 6 months old, explicitly mention this in your response and caution that more recent developments may not be reflected in your analysis.
-Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation.
+Refrain from mentioning or making comments on stock price movements. Do not make any buy or sell recommendation.{conversation_history}
 
 Tone and format:
 - Provide clear, detailed, and accurate information tailored to professional investors.
@@ -304,6 +322,7 @@ Tone and format:
 - If there are conflicting views or data points in different sources, acknowledge this and provide a balanced perspective.
 - When appropriate, highlight any potential risks, opportunities, or trends that may not be explicitly stated in the query but are relevant to the analysis.
 - If you don't have sufficient information to answer a query comprehensively, state this clearly and provide the best analysis possible with the available data.
+- Recognize this might be a follow-up question to previous conversation. If so, provide a coherent response that acknowledges the conversation history.
 - Be prepared to explain financial metrics, ratios, or industry-specific terms if requested.
 - Maintain a professional and objective tone throughout your responses.
 
@@ -573,6 +592,14 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
             )
         )
         
+        # Build conversation history for context
+        conversation_history = ""
+        if st.session_state.conversation_context:
+            conversation_history = "Previous conversation:\n"
+            for entry in st.session_state.conversation_context:
+                conversation_history += f"Question: {entry['query']}\n"
+                conversation_history += f"Answer: {entry['summary']}\n\n"
+        
         # Prepare files and content parts
         contents = []
         
@@ -601,7 +628,7 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
             return "No files were successfully processed for Gemini"
         
         # Add the prompt as the final content
-        prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: '{query}'"
+        prompt = f"You are a senior financial analyst. Review the attached documents and provide a detailed and structured answer to the user's query. User's query: '{query}'\n\n{conversation_history}"
         contents.append(prompt)
         
         # Generate content with files as context
@@ -661,14 +688,20 @@ def main():
                 st.session_state.chat_history = []
                 st.session_state.processed_files = []
                 st.session_state.documents_fetched = False
+                st.session_state.conversation_context = []
+        
+        # Add information about conversation capabilities
+        st.markdown("---")
+        st.markdown("### Conversation Features")
+        st.info("This app now supports follow-up questions! The AI will remember previous exchanges and provide contextual responses.")
     
     # Main chat area
     for message in st.session_state.chat_history:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     
-    # Chat input
-    if query := st.chat_input("Ask about the company..."):
+    # Chat input with updated placeholder
+    if query := st.chat_input("Ask about the company or follow up on previous answers..."):
         # Add user message to chat history
         st.session_state.chat_history.append({"role": "user", "content": query})
         with st.chat_message("user"):
@@ -866,6 +899,20 @@ def main():
                             
                             # Add assistant response to chat history
                             st.session_state.chat_history.append({"role": "assistant", "content": final_response})
+                            
+                            # Save condensed version of the response to conversation context
+                            # Extract the response without the sources section
+                            response_without_sources = claude_response.split("\n\n### Sources")[0]
+                            
+                            # Add to conversation context for future reference
+                            st.session_state.conversation_context.append({
+                                "query": query,
+                                "summary": response_without_sources[:500] + "..." if len(response_without_sources) > 500 else response_without_sources
+                            })
+                            
+                            # Limit conversation context to last 5 exchanges to prevent token overflow
+                            if len(st.session_state.conversation_context) > 5:
+                                st.session_state.conversation_context = st.session_state.conversation_context[-5:]
                     else:
                         response = "No documents are available for this company. Please try another company."
                         response_placeholder.markdown(response)
