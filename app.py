@@ -180,8 +180,13 @@ def extract_valid_json(response: Dict[str, Any]) -> Dict[str, Any]:
         return {"content": json_str}
 
 # Function to call Perplexity API
-async def query_perplexity(query: str, company_name: str) -> Tuple[str, List[Dict]]:
+async def query_perplexity(query: str, company_name: str, conversation_context=None) -> Tuple[str, List[Dict]]:
     """Call Perplexity API with a financial analyst prompt for the specified company
+    
+    Args:
+        query: The user's query
+        company_name: The name of the company
+        conversation_context: Passed explicitly to avoid thread issues with st.session_state
     
     Returns:
         Tuple[str, List[Dict]]: The response content and a list of citation objects
@@ -196,11 +201,11 @@ async def query_perplexity(query: str, company_name: str) -> Tuple[str, List[Dic
         
         url = "https://api.perplexity.ai/chat/completions"
         
-        # Build conversation history for context
+        # Build conversation history for context (safely)
         conversation_history = ""
-        if st.session_state.conversation_context:
+        if conversation_context:
             conversation_history = "Previous conversation:\n"
-            for entry in st.session_state.conversation_context:
+            for entry in conversation_context:
                 conversation_history += f"Question: {entry['query']}\n"
                 conversation_history += f"Answer: {entry['summary']}\n\n"
         
@@ -291,7 +296,7 @@ async def query_perplexity(query: str, company_name: str) -> Tuple[str, List[Dic
         return f"Error calling Perplexity API: {str(e)}", []
 
 # Function to call Claude with combined outputs
-def query_claude(query: str, company_name: str, gemini_output: str, perplexity_output: str) -> str:
+def query_claude(query: str, company_name: str, gemini_output: str, perplexity_output: str, conversation_context=None) -> str:
     """Call Claude API with combined Gemini and Perplexity outputs for final synthesis"""
     logger.info("Claude API: Starting synthesis process")
     start_time = time.time()
@@ -301,11 +306,11 @@ def query_claude(query: str, company_name: str, gemini_output: str, perplexity_o
         return "Error initializing Claude client"
     
     try:
-        # Build conversation history for context
+        # Build conversation history for context (safely)
         conversation_history = ""
-        if st.session_state.conversation_context:
+        if conversation_context:
             conversation_history = "\n\nPREVIOUS CONVERSATION CONTEXT:\n"
-            for entry in st.session_state.conversation_context:
+            for entry in conversation_context:
                 conversation_history += f"Question: {entry['query']}\n"
                 conversation_history += f"Answer: {entry['summary']}\n\n"
         
@@ -568,12 +573,12 @@ def download_files_from_s3(file_infos: List[Dict]) -> List[str]:
         return []
 
 # Function to query Gemini with file context
-async def query_gemini_async(query: str, file_paths: List[str]) -> str:
+async def query_gemini_async(query: str, file_paths: List[str], conversation_context=None) -> str:
     """Query Gemini model with context from files (async version)"""
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: query_gemini(query, file_paths))
+    return await loop.run_in_executor(None, lambda: query_gemini(query, file_paths, conversation_context))
 
-def query_gemini(query: str, file_paths: List[str]) -> str:
+def query_gemini(query: str, file_paths: List[str], conversation_context=None) -> str:
     """Query Gemini model with context from files"""
     try:
         logger.info(f"Gemini API: Starting analysis with {len(file_paths)} documents")
@@ -592,11 +597,11 @@ def query_gemini(query: str, file_paths: List[str]) -> str:
             )
         )
         
-        # Build conversation history for context
+        # Build conversation history for context (safely)
         conversation_history = ""
-        if st.session_state.conversation_context:
+        if conversation_context:
             conversation_history = "Previous conversation:\n"
-            for entry in st.session_state.conversation_context:
+            for entry in conversation_context:
                 conversation_history += f"Question: {entry['query']}\n"
                 conversation_history += f"Answer: {entry['summary']}\n\n"
         
@@ -700,6 +705,7 @@ def main():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     
+    # Main chat input section
     # Chat input with updated placeholder
     if query := st.chat_input("Ask about the company or follow up on previous answers..."):
         # Add user message to chat history
@@ -722,6 +728,9 @@ def main():
             # Get company name for Perplexity
             company_name = st.session_state.company_data['name']
             
+            # Get conversation context safely before starting thread
+            conversation_context = list(st.session_state.conversation_context) if "conversation_context" in st.session_state else []
+            
             # Create an event loop in a new thread for Perplexity
             perplexity_loop = asyncio.new_event_loop()
             
@@ -737,7 +746,7 @@ def main():
             # Start Perplexity API call immediately
             logger.info(f"Starting Perplexity API call immediately for query about {company_name}")
             start_time = time.time()
-            perplexity_future = asyncio.run_coroutine_threadsafe(query_perplexity(query, company_name), perplexity_loop)
+            perplexity_future = asyncio.run_coroutine_threadsafe(query_perplexity(query, company_name, conversation_context), perplexity_loop)
             
             try:
                 # Fetch documents if not already fetched
@@ -789,7 +798,7 @@ def main():
                             # Run Gemini analysis on documents
                             logger.info("Starting Gemini analysis on documents")
                             gemini_start = time.time()
-                            gemini_output = query_gemini(query, local_files)
+                            gemini_output = query_gemini(query, local_files, conversation_context)
                             gemini_duration = time.time() - gemini_start
                             logger.info(f"Completed Gemini analysis in {gemini_duration:.2f} seconds")
                             
@@ -834,7 +843,7 @@ def main():
                             # Process with Claude
                             logger.info("Starting final synthesis with Claude")
                             claude_start = time.time()
-                            claude_response = query_claude(query, company_name, gemini_output, perplexity_output)
+                            claude_response = query_claude(query, company_name, gemini_output, perplexity_output, conversation_context)
                             claude_duration = time.time() - claude_start
                             logger.info(f"Completed Claude synthesis in {claude_duration:.2f} seconds")
                             
