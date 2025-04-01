@@ -782,99 +782,112 @@ def main():
                             perplexity_thread.join(timeout=1.0)
                             return
                 
-                    # Process the user query with the fetched documents
-                    if st.session_state.processed_files:
-                        with st.spinner("Processing your query with multiple AI models..."):
-                            # Download files from S3
-                            local_files = download_files_from_s3(st.session_state.processed_files)
-                            
-                            if not local_files:
-                                response = "Error downloading files from S3. Please check your AWS credentials."
-                                response_placeholder.markdown(response)
-                                st.session_state.chat_history.append({"role": "assistant", "content": response})
-                                # Clean up
+                # Process the user query with fetched documents (for both new and follow-up questions)
+                if st.session_state.processed_files:
+                    with st.spinner("Processing your query with multiple AI models..."):
+                        # Download files from S3
+                        local_files = download_files_from_s3(st.session_state.processed_files)
+                        
+                        if not local_files:
+                            response = "Error downloading files from S3. Please check your AWS credentials."
+                            response_placeholder.markdown(response)
+                            st.session_state.chat_history.append({"role": "assistant", "content": response})
+                            # Clean up
+                            perplexity_future.cancel()
+                            perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
+                            perplexity_thread.join(timeout=1.0)
+                            return
+                        
+                        # Run Gemini analysis on documents
+                        logger.info("Starting Gemini analysis on documents")
+                        gemini_start = time.time()
+                        gemini_output = query_gemini(query, local_files, conversation_context)
+                        gemini_duration = time.time() - gemini_start
+                        logger.info(f"Completed Gemini analysis in {gemini_duration:.2f} seconds")
+                        
+                        # Wait for Perplexity to complete (it's been running since the beginning)
+                        logger.info("Waiting for Perplexity to complete (if not already finished)")
+                        try:
+                            # Get result with timeout
+                            perplexity_output, perplexity_citations = perplexity_future.result(timeout=60)
+                            perplexity_duration = time.time() - start_time
+                            logger.info(f"Completed Perplexity request in {perplexity_duration:.2f} seconds")
+                            logger.info(f"Perplexity returned {len(perplexity_citations)} citations")
+                        except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError, Exception) as e:
+                            # Handle timeout, cancellation, or other errors
+                            logger.error(f"Error waiting for Perplexity task: {str(e)}")
+                            # Cancel the task if it's still running
+                            if not perplexity_future.done():
+                                logger.info("Cancelling Perplexity task as it's still running")
                                 perplexity_future.cancel()
-                                perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
-                                perplexity_thread.join(timeout=1.0)
-                                return
+                            perplexity_output = "Error: Perplexity API request timed out or failed."
+                            perplexity_citations = []
+                        
+                        # Clean up the perplexity thread and loop
+                        try:
+                            perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
+                            perplexity_thread.join(timeout=1.0)
+                            logger.info("Successfully cleaned up Perplexity thread")
+                        except Exception as e:
+                            logger.error(f"Error cleaning up Perplexity thread: {str(e)}")
+                        
+                        # Log completion 
+                        logger.info("Completed first-stage LLM processing (Gemini and Perplexity)")
+                        logger.info(f"Gemini output length: {len(gemini_output)} characters")
+                        logger.info(f"Perplexity output length: {len(perplexity_output)} characters")
+                        
+                        # Error handling
+                        if gemini_output.startswith("Error") and perplexity_output.startswith("Error"):
+                            response = "Both Gemini and Perplexity APIs failed. Please try again later."
+                            response_placeholder.markdown(response)
+                            st.session_state.chat_history.append({"role": "assistant", "content": response})
+                            return
+                        
+                        # Process with Claude
+                        logger.info("Starting final synthesis with Claude")
+                        claude_start = time.time()
+                        claude_response = query_claude(query, company_name, gemini_output, perplexity_output, conversation_context)
+                        claude_duration = time.time() - claude_start
+                        logger.info(f"Completed Claude synthesis in {claude_duration:.2f} seconds")
+                        
+                        # Format sources section
+                        sources_section = "\n\n### Sources\n"
+                        
+                        # Add document sources under "Company data" sub-header
+                        sources_section += "\n#### Company data\n"
+                        for i, file_info in enumerate(st.session_state.processed_files, 1):
+                            s3_url = file_info['s3_url']
                             
-                            # Run Gemini analysis on documents
-                            logger.info("Starting Gemini analysis on documents")
-                            gemini_start = time.time()
-                            gemini_output = query_gemini(query, local_files, conversation_context)
-                            gemini_duration = time.time() - gemini_start
-                            logger.info(f"Completed Gemini analysis in {gemini_duration:.2f} seconds")
-                            
-                            # Wait for Perplexity to complete (it's been running since the beginning)
-                            logger.info("Waiting for Perplexity to complete (if not already finished)")
-                            try:
-                                # Get result with timeout
-                                perplexity_output, perplexity_citations = perplexity_future.result(timeout=60)
-                                perplexity_duration = time.time() - start_time
-                                logger.info(f"Completed Perplexity request in {perplexity_duration:.2f} seconds")
-                                logger.info(f"Perplexity returned {len(perplexity_citations)} citations")
-                            except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError, Exception) as e:
-                                # Handle timeout, cancellation, or other errors
-                                logger.error(f"Error waiting for Perplexity task: {str(e)}")
-                                # Cancel the task if it's still running
-                                if not perplexity_future.done():
-                                    logger.info("Cancelling Perplexity task as it's still running")
-                                    perplexity_future.cancel()
-                                perplexity_output = "Error: Perplexity API request timed out or failed."
-                                perplexity_citations = []
-                            
-                            # Clean up the perplexity thread and loop
-                            try:
-                                perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
-                                perplexity_thread.join(timeout=1.0)
-                                logger.info("Successfully cleaned up Perplexity thread")
-                            except Exception as e:
-                                logger.error(f"Error cleaning up Perplexity thread: {str(e)}")
-                            
-                            # Log completion 
-                            logger.info("Completed first-stage LLM processing (Gemini and Perplexity)")
-                            logger.info(f"Gemini output length: {len(gemini_output)} characters")
-                            logger.info(f"Perplexity output length: {len(perplexity_output)} characters")
-                            
-                            # Error handling
-                            if gemini_output.startswith("Error") and perplexity_output.startswith("Error"):
-                                response = "Both Gemini and Perplexity APIs failed. Please try again later."
-                                response_placeholder.markdown(response)
-                                st.session_state.chat_history.append({"role": "assistant", "content": response})
-                                return
-                            
-                            # Process with Claude
-                            logger.info("Starting final synthesis with Claude")
-                            claude_start = time.time()
-                            claude_response = query_claude(query, company_name, gemini_output, perplexity_output, conversation_context)
-                            claude_duration = time.time() - claude_start
-                            logger.info(f"Completed Claude synthesis in {claude_duration:.2f} seconds")
-                            
-                            # Format sources section
-                            sources_section = "\n\n### Sources\n"
-                            
-                            # Add document sources under "Company data" sub-header
-                            sources_section += "\n#### Company data\n"
-                            for i, file_info in enumerate(st.session_state.processed_files, 1):
-                                s3_url = file_info['s3_url']
-                                
-                                if s3_url.startswith('s3://'):
-                                    s3_path = s3_url[5:]
-                                    parts = s3_path.split('/', 1)
-                                    if len(parts) == 2:
-                                        bucket, key = parts
-                                        https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
-                                        filename = os.path.basename(key)
-                                        sources_section += f"{i}. [{filename}]({https_url})\n"
-                            
-                            # Add Perplexity attribution and citations under "Web sources" sub-header
-                            sources_section += "\n#### Web sources\n"
-                            if perplexity_citations:
-                                for i, citation in enumerate(perplexity_citations, 1):
-                                    # Handle different citation formats
-                                    if isinstance(citation, str):
-                                        # If citation is just a URL string
-                                        url = citation
+                            if s3_url.startswith('s3://'):
+                                s3_path = s3_url[5:]
+                                parts = s3_path.split('/', 1)
+                                if len(parts) == 2:
+                                    bucket, key = parts
+                                    https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
+                                    filename = os.path.basename(key)
+                                    sources_section += f"{i}. [{filename}]({https_url})\n"
+                        
+                        # Add Perplexity attribution and citations under "Web sources" sub-header
+                        sources_section += "\n#### Web sources\n"
+                        if perplexity_citations:
+                            for i, citation in enumerate(perplexity_citations, 1):
+                                # Handle different citation formats
+                                if isinstance(citation, str):
+                                    # If citation is just a URL string
+                                    url = citation
+                                    # Extract domain from URL if title is missing
+                                    try:
+                                        from urllib.parse import urlparse
+                                        domain = urlparse(url).netloc
+                                        title = domain
+                                    except:
+                                        title = f"Source {i}"
+                                    sources_section += f"{i}. [{title}]({url})\n"
+                                elif isinstance(citation, dict):
+                                    # If citation is a dictionary object
+                                    url = citation.get("url", "")
+                                    title = citation.get("title", "")
+                                    if not title:
                                         # Extract domain from URL if title is missing
                                         try:
                                             from urllib.parse import urlparse
@@ -882,57 +895,36 @@ def main():
                                             title = domain
                                         except:
                                             title = f"Source {i}"
-                                        sources_section += f"{i}. [{title}]({url})\n"
-                                    elif isinstance(citation, dict):
-                                        # If citation is a dictionary object
-                                        url = citation.get("url", "")
-                                        title = citation.get("title", "")
-                                        if not title:
-                                            # Extract domain from URL if title is missing
-                                            try:
-                                                from urllib.parse import urlparse
-                                                domain = urlparse(url).netloc
-                                                title = domain
-                                            except:
-                                                title = f"Source {i}"
-                                        sources_section += f"{i}. [{title}]({url})\n"
-                            else:
-                                sources_section += "*No specific web sources cited by Perplexity AI*"
-                            
-                            # Combine response with sources
-                            final_response = claude_response + sources_section
-                            
-                            # Calculate total processing time
-                            total_duration = time.time() - start_time
-                            logger.info(f"Total processing time: {total_duration:.2f} seconds")
-                            
-                            # Display response with sources
-                            response_placeholder.markdown(final_response)
-                            
-                            # Add assistant response to chat history
-                            st.session_state.chat_history.append({"role": "assistant", "content": final_response})
-                            
-                            # Save condensed version of the response to conversation context
-                            # Extract the response without the sources section
-                            response_without_sources = claude_response.split("\n\n### Sources")[0]
-                            
-                            # Add to conversation context for future reference
-                            st.session_state.conversation_context.append({
-                                "query": query,
-                                "summary": response_without_sources[:500] + "..." if len(response_without_sources) > 500 else response_without_sources
-                            })
-                            
-                            # Limit conversation context to last 5 exchanges to prevent token overflow
-                            if len(st.session_state.conversation_context) > 5:
-                                st.session_state.conversation_context = st.session_state.conversation_context[-5:]
-                    else:
-                        response = "No documents are available for this company. Please try another company."
-                        response_placeholder.markdown(response)
-                        st.session_state.chat_history.append({"role": "assistant", "content": response})
-                        # Clean up
-                        perplexity_future.cancel()
-                        perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
-                        perplexity_thread.join(timeout=1.0)
+                                    sources_section += f"{i}. [{title}]({url})\n"
+                        else:
+                            sources_section += "*No specific web sources cited by Perplexity AI*"
+                        
+                        # Combine response with sources
+                        final_response = claude_response + sources_section
+                        
+                        # Calculate total processing time
+                        total_duration = time.time() - start_time
+                        logger.info(f"Total processing time: {total_duration:.2f} seconds")
+                        
+                        # Display response with sources
+                        response_placeholder.markdown(final_response)
+                        
+                        # Add assistant response to chat history
+                        st.session_state.chat_history.append({"role": "assistant", "content": final_response})
+                        
+                        # Save condensed version of the response to conversation context
+                        # Extract the response without the sources section
+                        response_without_sources = claude_response.split("\n\n### Sources")[0]
+                        
+                        # Add to conversation context for future reference
+                        st.session_state.conversation_context.append({
+                            "query": query,
+                            "summary": response_without_sources[:500] + "..." if len(response_without_sources) > 500 else response_without_sources
+                        })
+                        
+                        # Limit conversation context to last 5 exchanges to prevent token overflow
+                        if len(st.session_state.conversation_context) > 5:
+                            st.session_state.conversation_context = st.session_state.conversation_context[-5:]
                 else:
                     response = "No documents are available for this company. Please try another company."
                     response_placeholder.markdown(response)
