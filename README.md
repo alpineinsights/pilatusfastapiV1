@@ -8,6 +8,7 @@ A Streamlit application that enables financial professionals to chat with financ
 - Fetch financial documents from Quartr API using company IDs
 - Convert transcript data to well-formatted PDFs
 - Upload and retrieve documents from Amazon S3
+- **Conversational Context**: Maintain conversation history for follow-up questions
 - Three-step LLM chain for comprehensive answers:
   1. **Document Analysis**: Gemini 2.0 Flash analyzes company documents
   2. **Web Search**: Perplexity API fetches current information
@@ -29,6 +30,7 @@ The application uses a sophisticated architecture with multiple components:
   - **Perplexity API**: Searches the web for current information
   - **Claude AI**: Synthesizes all information into comprehensive responses
 - **Asynchronous Processing**: Runs tasks in parallel for optimal performance
+- **Conversation Management**: Maintains context for follow-up questions
 
 ## Technical Implementation
 
@@ -37,10 +39,17 @@ The application implements a sophisticated multi-LLM chain:
 
 1. **First Stage** (Runs in Parallel):
    - **Gemini 2.0 Flash**: Analyzes company documents retrieved from S3
-   - **Perplexity API**: Simultaneously searches the web for the most current information
+   - **Perplexity API**: Simultaneously searches the web for the most current information, with specific research context about the company
 
 2. **Second Stage**:
    - **Claude 3.7 Sonnet**: Synthesizes outputs from both sources, providing a comprehensive answer that combines historical company documents with current information
+
+### Conversation Management
+- Maintains context of previous exchanges for natural follow-up questions
+- Each LLM in the chain receives relevant conversation history
+- Thread-safe implementation of context sharing between parallel processes
+- Context pruning to prevent token overflow (limits to last 5 exchanges)
+- Company-specific conversation tracking (resets when switching companies)
 
 ### Performance Optimization
 - Perplexity API call starts immediately when a user query is submitted
@@ -118,13 +127,18 @@ streamlit run app.py
 1. User selects a company from the dropdown in the sidebar
 2. App fetches the company's Quartr ID from Supabase
 3. When the user asks a question:
-   - Perplexity API call starts immediately to search the web
+   - Perplexity API call starts immediately to search the web with company-specific research context
    - In parallel, if not already fetched:
      - App retrieves financial documents from Quartr API using the company ID
      - Documents are processed and stored in S3
    - Documents are downloaded from S3 and analyzed by Gemini
    - Claude synthesizes information from both Gemini and Perplexity
    - The comprehensive response is displayed with source information
+4. For follow-up questions:
+   - Previous conversation context is passed to all three models
+   - Models can reference earlier questions and answers
+   - No need to re-fetch documents, improving response time
+   - Same multi-LLM pipeline runs with the added context
 
 ## Data Sources
 
@@ -132,5 +146,6 @@ The application leverages multiple data sources:
 - **Company Documents**: Financial reports, presentations, and call transcripts from Quartr
 - **Web Information**: Current news, analyses, and market data from Perplexity web search
 - **Company Database**: Structured company information from Supabase
+- **Conversation History**: Previous exchanges for contextual follow-up questions
 
 This multi-source approach ensures comprehensive and up-to-date information for financial analysis.
