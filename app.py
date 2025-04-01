@@ -18,6 +18,7 @@ from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by
 import io
 import re
 import threading
+import concurrent.futures
 # Try to import PyMuPDF (fitz), but don't fail if it's not available
 try:
     import fitz  # PyMuPDF
@@ -212,56 +213,69 @@ async def query_perplexity(query: str, company_name: str) -> Tuple[str, List[Dic
             "Content-Type": "application/json"
         }
         
+        # Set timeout to prevent hanging requests
+        timeout = aiohttp.ClientTimeout(total=45)  # 45 second timeout
+        
         # Use aiohttp to make the request asynchronously
-        async with aiohttp.ClientSession() as session:
-            logger.info("Perplexity API: Sending request to API server")
-            async with session.post(url, json=payload, headers=headers) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(f"Perplexity API returned error {response.status}: {error_text}")
-                    return f"Error: Perplexity API returned status {response.status}", []
-                
-                logger.info("Perplexity API: Received response from server")
-                response_json = await response.json()
-                elapsed = time.time() - start_time
-                logger.info(f"Perplexity API: Response received in {elapsed:.2f} seconds")
-                
-                # Log the raw response for debugging
-                logger.info(f"Perplexity API raw response structure: {list(response_json.keys())}")
-                
-                # Extract citations if present
-                citations = response_json.get("citations", [])
-                logger.info(f"Perplexity API: Found {len(citations)} citations")
-                # Log the format and content of the first few citations
-                if citations:
-                    logger.info(f"Citation type: {type(citations)}")
-                    for i, citation in enumerate(citations[:3]):  # Log first 3 citations
-                        logger.info(f"Citation {i} type: {type(citation)}")
-                        logger.info(f"Citation {i} content: {citation}")
-                else:
-                    logger.info("No citations found in Perplexity response")
-                
-                # Simplified extraction - just get the text content directly
-                if "choices" in response_json and len(response_json["choices"]) > 0:
-                    if "message" in response_json["choices"][0] and "content" in response_json["choices"][0]["message"]:
-                        content = response_json["choices"][0]["message"]["content"]
-                        
-                        # If content contains a </think> tag, extract everything after it
-                        if "</think>" in content:
-                            content = content.split("</think>", 1)[1].strip()
-                        
-                        return content, citations
-                
-                # Fallback if we couldn't extract the content using the above method
-                try:
-                    parsed_content = extract_valid_json(response_json)
-                    if isinstance(parsed_content, dict) and "content" in parsed_content:
-                        return parsed_content["content"], citations
-                    return str(parsed_content), citations
-                except Exception as e:
-                    logger.error(f"Error parsing Perplexity response: {e}")
-                    return "Error processing Perplexity response. Please check logs for details.", []
-    
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                logger.info("Perplexity API: Sending request to API server")
+                async with session.post(url, json=payload, headers=headers) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Perplexity API returned error {response.status}: {error_text}")
+                        return f"Error: Perplexity API returned status {response.status}", []
+                    
+                    logger.info("Perplexity API: Received response from server")
+                    response_json = await response.json()
+                    elapsed = time.time() - start_time
+                    logger.info(f"Perplexity API: Response received in {elapsed:.2f} seconds")
+                    
+                    # Log the raw response for debugging
+                    logger.info(f"Perplexity API raw response structure: {list(response_json.keys())}")
+                    
+                    # Extract citations if present
+                    citations = response_json.get("citations", [])
+                    logger.info(f"Perplexity API: Found {len(citations)} citations")
+                    # Log the format and content of the first few citations
+                    if citations:
+                        logger.info(f"Citation type: {type(citations)}")
+                        for i, citation in enumerate(citations[:3]):  # Log first 3 citations
+                            logger.info(f"Citation {i} type: {type(citation)}")
+                            logger.info(f"Citation {i} content: {citation}")
+                    else:
+                        logger.info("No citations found in Perplexity response")
+                    
+                    # Simplified extraction - just get the text content directly
+                    if "choices" in response_json and len(response_json["choices"]) > 0:
+                        if "message" in response_json["choices"][0] and "content" in response_json["choices"][0]["message"]:
+                            content = response_json["choices"][0]["message"]["content"]
+                            
+                            # If content contains a </think> tag, extract everything after it
+                            if "</think>" in content:
+                                content = content.split("</think>", 1)[1].strip()
+                            
+                            return content, citations
+                    
+                    # Fallback if we couldn't extract the content using the above method
+                    try:
+                        parsed_content = extract_valid_json(response_json)
+                        if isinstance(parsed_content, dict) and "content" in parsed_content:
+                            return parsed_content["content"], citations
+                        return str(parsed_content), citations
+                    except Exception as e:
+                        logger.error(f"Error parsing Perplexity response: {e}")
+                        return "Error processing Perplexity response. Please check logs for details.", []
+        except asyncio.TimeoutError:
+            logger.error("Perplexity API request timed out after 45 seconds")
+            return "Error: Perplexity API request timed out. Please try again later.", []
+        except asyncio.CancelledError:
+            logger.info("Perplexity API request was cancelled")
+            raise  # Re-raise the CancelledError to allow proper cleanup
+        
+    except asyncio.CancelledError:
+        logger.warning("Perplexity API task was cancelled")
+        raise  # Re-raise to allow proper cleanup
     except Exception as e:
         logger.error(f"Error calling Perplexity API: {str(e)}")
         return f"Error calling Perplexity API: {str(e)}", []
@@ -487,28 +501,52 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
 # Function to download files from S3 to temporary location
 def download_files_from_s3(file_infos: List[Dict]) -> List[str]:
     """Download files from S3 to temporary location and return local paths"""
-    s3_client = boto3.client(
-        's3',
-        aws_access_key_id=AWS_ACCESS_KEY_ID,
-        aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-        region_name=AWS_DEFAULT_REGION
-    )
-    
-    temp_dir = tempfile.mkdtemp()
-    local_files = []
-    
-    for file_info in file_infos:
-        try:
-            s3_path = file_info['s3_url'].replace('s3://', '')
-            bucket, key = s3_path.split('/', 1)
-            
-            local_path = os.path.join(temp_dir, file_info['filename'])
-            s3_client.download_file(bucket, key, local_path)
-            local_files.append(local_path)
-        except Exception as e:
-            st.error(f"Error downloading file from S3: {str(e)}")
-    
-    return local_files
+    try:
+        s3_client = boto3.client(
+            's3',
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            region_name=AWS_DEFAULT_REGION
+        )
+        
+        temp_dir = tempfile.mkdtemp()
+        local_files = []
+        
+        for file_info in file_infos:
+            try:
+                s3_path = file_info['s3_url'].replace('s3://', '')
+                bucket, key = s3_path.split('/', 1)
+                
+                # Replace "/" in filenames with "-" to avoid directory structure issues
+                safe_filename = file_info['filename'].replace('/', '-')
+                local_path = os.path.join(temp_dir, safe_filename)
+                
+                # Log the download attempt
+                logger.info(f"Downloading {key} from S3 bucket {bucket} to {local_path}")
+                
+                # Create the directory if it doesn't exist
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                
+                # Download the file
+                s3_client.download_file(bucket, key, local_path)
+                
+                # Verify the file exists and has content
+                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    local_files.append(local_path)
+                    logger.info(f"Successfully downloaded {local_path}")
+                else:
+                    logger.error(f"File {local_path} was downloaded but is empty or missing")
+            except Exception as e:
+                logger.error(f"Error downloading file from S3: {str(e)}")
+                continue
+        
+        if not local_files:
+            logger.error("No files were successfully downloaded from S3")
+        
+        return local_files
+    except Exception as e:
+        logger.error(f"Error initializing S3 client: {str(e)}")
+        return []
 
 # Function to query Gemini with file context
 async def query_gemini_async(query: str, file_paths: List[str]) -> str:
@@ -679,6 +717,7 @@ def main():
                             response_placeholder.markdown(response)
                             st.session_state.chat_history.append({"role": "assistant", "content": response})
                             # Clean up
+                            perplexity_future.cancel()
                             perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
                             perplexity_thread.join(timeout=1.0)
                             return
@@ -693,106 +732,104 @@ def main():
                             response_placeholder.markdown(response)
                             st.session_state.chat_history.append({"role": "assistant", "content": response})
                             # Clean up
+                            perplexity_future.cancel()
                             perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
                             perplexity_thread.join(timeout=1.0)
                             return
                 
-                # Process the user query with the fetched documents
-                if st.session_state.processed_files:
-                    with st.spinner("Processing your query with multiple AI models..."):
-                        # Download files from S3
-                        local_files = download_files_from_s3(st.session_state.processed_files)
-                        
-                        if not local_files:
-                            response = "Error downloading files from S3. Please check your AWS credentials."
-                            response_placeholder.markdown(response)
-                            st.session_state.chat_history.append({"role": "assistant", "content": response})
-                            # Clean up
-                            perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
-                            perplexity_thread.join(timeout=1.0)
-                            return
-                        
-                        # Run Gemini analysis on documents
-                        logger.info("Starting Gemini analysis on documents")
-                        gemini_start = time.time()
-                        gemini_output = query_gemini(query, local_files)
-                        gemini_duration = time.time() - gemini_start
-                        logger.info(f"Completed Gemini analysis in {gemini_duration:.2f} seconds")
-                        
-                        # Wait for Perplexity to complete (it's been running since the beginning)
-                        logger.info("Waiting for Perplexity to complete (if not already finished)")
-                        try:
-                            # Get result with timeout
-                            perplexity_output, perplexity_citations = perplexity_future.result(timeout=60)
-                            perplexity_duration = time.time() - start_time
-                            logger.info(f"Completed Perplexity request in {perplexity_duration:.2f} seconds")
-                            logger.info(f"Perplexity returned {len(perplexity_citations)} citations")
-                        except Exception as e:
-                            logger.error(f"Error waiting for Perplexity task: {str(e)}")
-                            perplexity_output = "Error: Perplexity API request timed out or failed."
-                            perplexity_citations = []
-                        
-                        # Clean up the perplexity thread
-                        perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
-                        perplexity_thread.join(timeout=1.0)
-                        
-                        # Log completion 
-                        logger.info("Completed first-stage LLM processing (Gemini and Perplexity)")
-                        logger.info(f"Gemini output length: {len(gemini_output)} characters")
-                        logger.info(f"Perplexity output length: {len(perplexity_output)} characters")
-                        
-                        # Error handling
-                        if gemini_output.startswith("Error") and perplexity_output.startswith("Error"):
-                            response = "Both Gemini and Perplexity APIs failed. Please try again later."
-                            response_placeholder.markdown(response)
-                            st.session_state.chat_history.append({"role": "assistant", "content": response})
-                            return
-                        
-                        # Process with Claude
-                        logger.info("Starting final synthesis with Claude")
-                        claude_start = time.time()
-                        claude_response = query_claude(query, company_name, gemini_output, perplexity_output)
-                        claude_duration = time.time() - claude_start
-                        logger.info(f"Completed Claude synthesis in {claude_duration:.2f} seconds")
-                        
-                        # Format sources section
-                        sources_section = "\n\n### Sources\n"
-                        
-                        # Add document sources under "Company data" sub-header
-                        sources_section += "\n#### Company data\n"
-                        for i, file_info in enumerate(st.session_state.processed_files, 1):
-                            s3_url = file_info['s3_url']
+                    # Process the user query with the fetched documents
+                    if st.session_state.processed_files:
+                        with st.spinner("Processing your query with multiple AI models..."):
+                            # Download files from S3
+                            local_files = download_files_from_s3(st.session_state.processed_files)
                             
-                            if s3_url.startswith('s3://'):
-                                s3_path = s3_url[5:]
-                                parts = s3_path.split('/', 1)
-                                if len(parts) == 2:
-                                    bucket, key = parts
-                                    https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
-                                    filename = os.path.basename(key)
-                                    sources_section += f"{i}. [{filename}]({https_url})\n"
-                        
-                        # Add Perplexity attribution and citations under "Web sources" sub-header
-                        sources_section += "\n#### Web sources\n"
-                        if perplexity_citations:
-                            for i, citation in enumerate(perplexity_citations, 1):
-                                # Handle different citation formats
-                                if isinstance(citation, str):
-                                    # If citation is just a URL string
-                                    url = citation
-                                    # Extract domain from URL if title is missing
-                                    try:
-                                        from urllib.parse import urlparse
-                                        domain = urlparse(url).netloc
-                                        title = domain
-                                    except:
-                                        title = f"Source {i}"
-                                    sources_section += f"{i}. [{title}]({url})\n"
-                                elif isinstance(citation, dict):
-                                    # If citation is a dictionary object
-                                    url = citation.get("url", "")
-                                    title = citation.get("title", "")
-                                    if not title:
+                            if not local_files:
+                                response = "Error downloading files from S3. Please check your AWS credentials."
+                                response_placeholder.markdown(response)
+                                st.session_state.chat_history.append({"role": "assistant", "content": response})
+                                # Clean up
+                                perplexity_future.cancel()
+                                perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
+                                perplexity_thread.join(timeout=1.0)
+                                return
+                            
+                            # Run Gemini analysis on documents
+                            logger.info("Starting Gemini analysis on documents")
+                            gemini_start = time.time()
+                            gemini_output = query_gemini(query, local_files)
+                            gemini_duration = time.time() - gemini_start
+                            logger.info(f"Completed Gemini analysis in {gemini_duration:.2f} seconds")
+                            
+                            # Wait for Perplexity to complete (it's been running since the beginning)
+                            logger.info("Waiting for Perplexity to complete (if not already finished)")
+                            try:
+                                # Get result with timeout
+                                perplexity_output, perplexity_citations = perplexity_future.result(timeout=60)
+                                perplexity_duration = time.time() - start_time
+                                logger.info(f"Completed Perplexity request in {perplexity_duration:.2f} seconds")
+                                logger.info(f"Perplexity returned {len(perplexity_citations)} citations")
+                            except (concurrent.futures.TimeoutError, concurrent.futures.CancelledError, Exception) as e:
+                                # Handle timeout, cancellation, or other errors
+                                logger.error(f"Error waiting for Perplexity task: {str(e)}")
+                                # Cancel the task if it's still running
+                                if not perplexity_future.done():
+                                    logger.info("Cancelling Perplexity task as it's still running")
+                                    perplexity_future.cancel()
+                                perplexity_output = "Error: Perplexity API request timed out or failed."
+                                perplexity_citations = []
+                            
+                            # Clean up the perplexity thread and loop
+                            try:
+                                perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
+                                perplexity_thread.join(timeout=1.0)
+                                logger.info("Successfully cleaned up Perplexity thread")
+                            except Exception as e:
+                                logger.error(f"Error cleaning up Perplexity thread: {str(e)}")
+                            
+                            # Log completion 
+                            logger.info("Completed first-stage LLM processing (Gemini and Perplexity)")
+                            logger.info(f"Gemini output length: {len(gemini_output)} characters")
+                            logger.info(f"Perplexity output length: {len(perplexity_output)} characters")
+                            
+                            # Error handling
+                            if gemini_output.startswith("Error") and perplexity_output.startswith("Error"):
+                                response = "Both Gemini and Perplexity APIs failed. Please try again later."
+                                response_placeholder.markdown(response)
+                                st.session_state.chat_history.append({"role": "assistant", "content": response})
+                                return
+                            
+                            # Process with Claude
+                            logger.info("Starting final synthesis with Claude")
+                            claude_start = time.time()
+                            claude_response = query_claude(query, company_name, gemini_output, perplexity_output)
+                            claude_duration = time.time() - claude_start
+                            logger.info(f"Completed Claude synthesis in {claude_duration:.2f} seconds")
+                            
+                            # Format sources section
+                            sources_section = "\n\n### Sources\n"
+                            
+                            # Add document sources under "Company data" sub-header
+                            sources_section += "\n#### Company data\n"
+                            for i, file_info in enumerate(st.session_state.processed_files, 1):
+                                s3_url = file_info['s3_url']
+                                
+                                if s3_url.startswith('s3://'):
+                                    s3_path = s3_url[5:]
+                                    parts = s3_path.split('/', 1)
+                                    if len(parts) == 2:
+                                        bucket, key = parts
+                                        https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
+                                        filename = os.path.basename(key)
+                                        sources_section += f"{i}. [{filename}]({https_url})\n"
+                            
+                            # Add Perplexity attribution and citations under "Web sources" sub-header
+                            sources_section += "\n#### Web sources\n"
+                            if perplexity_citations:
+                                for i, citation in enumerate(perplexity_citations, 1):
+                                    # Handle different citation formats
+                                    if isinstance(citation, str):
+                                        # If citation is just a URL string
+                                        url = citation
                                         # Extract domain from URL if title is missing
                                         try:
                                             from urllib.parse import urlparse
@@ -800,27 +837,49 @@ def main():
                                             title = domain
                                         except:
                                             title = f"Source {i}"
-                                    sources_section += f"{i}. [{title}]({url})\n"
-                        else:
-                            sources_section += "*No specific web sources cited by Perplexity AI*"
-                        
-                        # Combine response with sources
-                        final_response = claude_response + sources_section
-                        
-                        # Calculate total processing time
-                        total_duration = time.time() - start_time
-                        logger.info(f"Total processing time: {total_duration:.2f} seconds")
-                        
-                        # Display response with sources
-                        response_placeholder.markdown(final_response)
-                        
-                        # Add assistant response to chat history
-                        st.session_state.chat_history.append({"role": "assistant", "content": final_response})
+                                        sources_section += f"{i}. [{title}]({url})\n"
+                                    elif isinstance(citation, dict):
+                                        # If citation is a dictionary object
+                                        url = citation.get("url", "")
+                                        title = citation.get("title", "")
+                                        if not title:
+                                            # Extract domain from URL if title is missing
+                                            try:
+                                                from urllib.parse import urlparse
+                                                domain = urlparse(url).netloc
+                                                title = domain
+                                            except:
+                                                title = f"Source {i}"
+                                        sources_section += f"{i}. [{title}]({url})\n"
+                            else:
+                                sources_section += "*No specific web sources cited by Perplexity AI*"
+                            
+                            # Combine response with sources
+                            final_response = claude_response + sources_section
+                            
+                            # Calculate total processing time
+                            total_duration = time.time() - start_time
+                            logger.info(f"Total processing time: {total_duration:.2f} seconds")
+                            
+                            # Display response with sources
+                            response_placeholder.markdown(final_response)
+                            
+                            # Add assistant response to chat history
+                            st.session_state.chat_history.append({"role": "assistant", "content": final_response})
+                    else:
+                        response = "No documents are available for this company. Please try another company."
+                        response_placeholder.markdown(response)
+                        st.session_state.chat_history.append({"role": "assistant", "content": response})
+                        # Clean up
+                        perplexity_future.cancel()
+                        perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
+                        perplexity_thread.join(timeout=1.0)
                 else:
                     response = "No documents are available for this company. Please try another company."
                     response_placeholder.markdown(response)
                     st.session_state.chat_history.append({"role": "assistant", "content": response})
                     # Clean up
+                    perplexity_future.cancel()
                     perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
                     perplexity_thread.join(timeout=1.0)
             except Exception as e:
@@ -830,6 +889,7 @@ def main():
                 response_placeholder.markdown(response)
                 st.session_state.chat_history.append({"role": "assistant", "content": response})
                 # Clean up
+                perplexity_future.cancel()
                 perplexity_loop.call_soon_threadsafe(perplexity_loop.stop)
                 perplexity_thread.join(timeout=1.0)
 
