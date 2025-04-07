@@ -3,16 +3,21 @@ This module handles the integration with Supabase to fetch company data.
 Uses the Supabase Python client for more reliable connections.
 """
 
-import streamlit as st
+import os
 from supabase import create_client
 from typing import Dict, List, Optional
 import pandas as pd
 import logging
+from dotenv import load_dotenv
+from functools import lru_cache
+
+# Load environment variables
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 # Initialize Supabase client
-@st.cache_resource
+@lru_cache(maxsize=1)
 def init_client():
     """
     Initialize and cache the Supabase client connection
@@ -22,29 +27,24 @@ def init_client():
         supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
         supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1hZWlzdGJva3lqaGV3cnJpc3ZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMxNTgyMTUsImV4cCI6MjA1ODczNDIxNX0._Fb4I1BvmqMHbB5KyrtlEmPTyF8nRgR9LsmNFmiZSN8"
         
-        # Override with values from secrets if available
-        if hasattr(st, 'secrets'):
-            # Check for URL in various possible keys
-            for key in ['supabase_url', 'SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL']:
-                if key in st.secrets:
-                    supabase_url = st.secrets[key]
-                    break
-                    
-            # Check for API key in various possible keys
-            for key in ['supabase_anon_key', 'SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_ANON_KEY']:
-                if key in st.secrets:
-                    supabase_key = st.secrets[key]
-                    break
+        # Override with values from environment variables if available
+        env_url = os.getenv("SUPABASE_URL")
+        env_key = os.getenv("SUPABASE_ANON_KEY")
+        
+        if env_url:
+            supabase_url = env_url
+        if env_key:
+            supabase_key = env_key
                 
         # Initialize the client
         client = create_client(supabase_url, supabase_key)
         return client
         
     except Exception as e:
-        st.error(f"Failed to initialize Supabase client: {str(e)}")
+        logger.error(f"Failed to initialize Supabase client: {str(e)}")
         return None
 
-@st.cache_data(ttl=60*60)  # Cache for 1 hour
+@lru_cache(maxsize=100)
 def get_all_companies() -> List[Dict]:
     """
     Fetches all companies from the Supabase 'universe' table.
@@ -62,17 +62,10 @@ def get_all_companies() -> List[Dict]:
             return response.data
         return []
     except Exception as e:
-        st.error(f"Error fetching companies from Supabase: {str(e)}")
-        # Fallback to direct SQL connection
-        try:
-            conn = st.connection("supabase", type="sql")
-            rows = conn.query("SELECT * FROM universe;")
-            return rows.to_dict('records')
-        except Exception as e2:
-            st.error(f"Fallback also failed: {str(e2)}")
-            return []
+        logger.error(f"Error fetching companies from Supabase: {str(e)}")
+        return []
 
-@st.cache_data(ttl=60*60)  # Cache for 1 hour
+@lru_cache(maxsize=100)
 def get_company_names() -> List[str]:
     """
     Returns a list of all company names from Supabase.
@@ -83,7 +76,7 @@ def get_company_names() -> List[str]:
     companies = get_all_companies()
     return [company["Name"] for company in companies if "Name" in company]
 
-@st.cache_data(ttl=60*60)  # Cache for 1 hour
+@lru_cache(maxsize=100)
 def get_quartrid_by_name(company_name: str) -> Optional[str]:
     """
     Retrieves the Quartr ID for a given company name from Supabase.
@@ -106,53 +99,10 @@ def get_quartrid_by_name(company_name: str) -> Optional[str]:
             return str(quartr_id)  # Convert to string to ensure compatibility
         return None
     except Exception as e:
-        st.error(f"Error fetching Quartr ID for {company_name}: {str(e)}")
-        # Fallback to direct SQL if API fails
-        try:
-            conn = st.connection("supabase", type="sql")
-            rows = conn.query(f"SELECT \"Quartr Id\" FROM universe WHERE \"Name\" = '{company_name}';")
-            if not rows.empty and "Quartr Id" in rows.columns:
-                quartr_id = rows.iloc[0]["Quartr Id"]
-                logger.info(f"Found Quartr ID {quartr_id} for company: {company_name} (via SQL)")
-                return str(quartr_id)  # Convert to string to ensure compatibility
-        except:
-            pass
+        logger.error(f"Error fetching Quartr ID for {company_name}: {str(e)}")
         return None
 
-@st.cache_data(ttl=60*60)  # Cache for 1 hour
-def get_isin_by_name(company_name: str) -> Optional[str]:
-    """
-    Retrieves the ISIN code for a given company name from Supabase.
-    Note: This is kept for backward compatibility but is no longer the primary identifier.
-    
-    Args:
-        company_name (str): The company name to look up
-        
-    Returns:
-        str: The ISIN code if found, None otherwise
-    """
-    try:
-        client = init_client()
-        if not client:
-            return None
-            
-        response = client.table('universe').select('ISIN').eq('Name', company_name).execute()
-        if response.data and len(response.data) > 0:
-            return response.data[0].get("ISIN")
-        return None
-    except Exception as e:
-        st.error(f"Error fetching ISIN for {company_name}: {str(e)}")
-        # Fallback to direct SQL if API fails
-        try:
-            conn = st.connection("supabase", type="sql")
-            rows = conn.query(f"SELECT \"ISIN\" FROM universe WHERE \"Name\" = '{company_name}';")
-            if not rows.empty and "ISIN" in rows.columns:
-                return rows.iloc[0]["ISIN"]
-        except:
-            pass
-        return None
-
-@st.cache_data(ttl=60*60)  # Cache for 1 hour
+@lru_cache(maxsize=100)
 def get_company_by_quartrid(quartrid: str) -> Optional[Dict]:
     """
     Retrieves company data for a given Quartr ID from Supabase.
@@ -173,30 +123,5 @@ def get_company_by_quartrid(quartrid: str) -> Optional[Dict]:
             return response.data[0]
         return None
     except Exception as e:
-        st.error(f"Error fetching company by Quartr ID {quartrid}: {str(e)}")
-        return None
-
-@st.cache_data(ttl=60*60)  # Cache for 1 hour
-def get_company_by_isin(isin: str) -> Optional[Dict]:
-    """
-    Retrieves company data for a given ISIN code from Supabase.
-    
-    Args:
-        isin (str): The ISIN code to look up
-        
-    Returns:
-        dict: The company data if found, None otherwise
-    """
-    try:
-        client = init_client()
-        if not client:
-            st.error("Failed to initialize Supabase client.")
-            return None
-            
-        response = client.table('universe').select('*').eq('ISIN', isin).execute()
-        if response.data and len(response.data) > 0:
-            return response.data[0]
-        return None
-    except Exception as e:
-        st.error(f"Error fetching company by ISIN {isin}: {str(e)}")
+        logger.error(f"Error fetching company by Quartr ID {quartrid}: {str(e)}")
         return None
