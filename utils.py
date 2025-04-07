@@ -9,12 +9,11 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from typing import Dict, Optional, List
-import streamlit as st
-from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by_name, get_all_companies
 import base64
 import uuid
 import requests
 from functools import lru_cache
+from supabase_client import get_company_names, get_quartrid_by_name, get_all_companies
 
 # Load environment variables
 load_dotenv()
@@ -40,7 +39,7 @@ class SupabaseStorageHandler:
     
     def __init__(self):
         self.client = init_supabase_storage_client()
-        self.bucket_name = "alpinedatalake"
+        self.bucket_name = os.getenv("SUPABASE_BUCKET_NAME", "alpinedatalake")
     
     def create_filename(self, company_name: str, event_date: str, event_title: str, 
                        doc_type: str, original_filename: str) -> str:
@@ -90,17 +89,9 @@ class SupabaseStorageHandler:
             try:
                 logger.info(f"Attempting direct HTTP upload for {filename}")
                 
-                supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
-                supabase_key = None
-                
-                # Get credentials from secrets
-                if hasattr(st, 'secrets'):
-                    if 'supabase_url' in st.secrets:
-                        supabase_url = st.secrets['supabase_url']
-                    if 'supabase_anon_key' in st.secrets:
-                        supabase_key = st.secrets['supabase_anon_key']
-                    elif 'NEXT_PUBLIC_SUPABASE_ANON_KEY' in st.secrets:
-                        supabase_key = st.secrets['NEXT_PUBLIC_SUPABASE_ANON_KEY']
+                # Get Supabase credentials from environment variables
+                supabase_url = os.getenv("SUPABASE_URL", "https://maeistbokyjhewrrisvf.supabase.co")
+                supabase_key = os.getenv("SUPABASE_ANON_KEY")
                 
                 if not supabase_key:
                     logger.error("Missing Supabase key for direct upload")
@@ -136,18 +127,13 @@ class SupabaseStorageHandler:
                 return url
                 
             # If that fails, construct the URL manually
-            supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
-            if hasattr(st, 'secrets') and 'supabase_url' in st.secrets:
-                supabase_url = st.secrets['supabase_url']
-                
+            supabase_url = os.getenv("SUPABASE_URL", "https://maeistbokyjhewrrisvf.supabase.co")
             return f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
         except Exception as e:
             logger.error(f"Error getting public URL: {str(e)}")
             
             # Last resort fallback
-            supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
-            if hasattr(st, 'secrets') and 'supabase_url' in st.secrets:
-                supabase_url = st.secrets['supabase_url']
+            supabase_url = os.getenv("SUPABASE_URL", "https://maeistbokyjhewrrisvf.supabase.co")
             return f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
     
     async def download_file(self, filename: str, local_path: str) -> bool:
@@ -182,9 +168,7 @@ class SupabaseStorageHandler:
                 logger.info(f"Attempting direct HTTP download for {filename}")
                 
                 # Get the direct URL to the file
-                supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
-                if hasattr(st, 'secrets') and 'supabase_url' in st.secrets:
-                    supabase_url = st.secrets['supabase_url']
+                supabase_url = os.getenv("SUPABASE_URL", "https://maeistbokyjhewrrisvf.supabase.co")
                 
                 # Construct public URL
                 public_url = f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
