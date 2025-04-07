@@ -348,8 +348,7 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
                                 )
                                 
                                 success = await storage_handler.upload_file(
-                                    content, filename, 
-                                    response.headers.get('content-type', 'application/pdf')
+                                    content, filename, 'application/pdf'
                                 )
                                 
                                 if success:
@@ -388,8 +387,7 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
                                 )
                                 
                                 success = await storage_handler.upload_file(
-                                    content, filename, 
-                                    response.headers.get('content-type', 'application/pdf')
+                                    content, filename, 'application/pdf'
                                 )
                                 
                                 if success:
