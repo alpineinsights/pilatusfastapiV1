@@ -1,4 +1,3 @@
-import streamlit as st
 import pandas as pd
 import os
 import tempfile
@@ -29,6 +28,7 @@ from utils_helper import process_company_documents, initialize_claude
 from datetime import datetime
 from logging_config import setup_logging
 from logger import logger  # Import the configured logger
+from urllib.parse import urlparse
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -527,33 +527,45 @@ async def download_files_from_s3(file_urls: List[str]) -> List[str]:
         temp_dir = tempfile.mkdtemp()
         local_files = []
         
-        # Create a new event loop for async operations
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
+        # Create the asyncio event loop if not already running
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
         
         # Download files
         for file_url in file_urls:
             try:
-                safe_filename = file_url.replace('/', '-')
+                # Extract the S3 key from the URL
+                parsed_url = urlparse(file_url)
+                # Get the path portion of the URL
+                path = parsed_url.path
+                
+                # Extract the key part (remove leading slash and bucket name if present)
+                path_parts = path.split('/')
+                if len(path_parts) > 2:  # Format: /bucket-name/key
+                    s3_key = '/'.join(path_parts[2:])
+                else:  # Format: /key or key
+                    s3_key = path.lstrip('/')
+                
+                safe_filename = s3_key.replace('/', '-')
                 local_path = os.path.join(temp_dir, safe_filename)
                 
-                logger.info(f"Downloading {file_url} from AWS S3 storage to {local_path}")
-                success = loop.run_until_complete(aws_handler.download_file(file_url, local_path))
+                logger.info(f"Downloading {s3_key} from AWS S3 storage to {local_path}")
+                success = loop.run_until_complete(aws_handler.download_file(s3_key, local_path))
                 
                 if success:
                     local_files.append(local_path)
-                    logger.info(f"Successfully downloaded {local_path}")
+                    logger.info(f"Successfully downloaded {s3_key} to {local_path}")
+                else:
+                    logger.error(f"Failed to download {s3_key}")
             except Exception as e:
                 logger.error(f"Error downloading file: {str(e)}")
-        
-        loop.close()
-        
-        if not local_files:
-            logger.error("No files were successfully downloaded")
-        
+                
         return local_files
     except Exception as e:
-        logger.error(f"Error in download process: {str(e)}")
+        logger.error(f"Error in download_files_from_s3: {str(e)}")
         return []
 
 # Function to query Gemini with file context
