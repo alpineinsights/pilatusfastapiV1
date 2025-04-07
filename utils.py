@@ -123,18 +123,25 @@ class SupabaseStorageHandler:
         try:
             # First attempt to use the client method
             url = self.client.storage.from_(self.bucket_name).get_public_url(filename)
+            
+            # Clean up the URL by removing any trailing question mark
             if url:
+                # Remove trailing question mark if present
+                if url.endswith('?'):
+                    url = url[:-1]
                 return url
                 
             # If that fails, construct the URL manually
             supabase_url = os.getenv("SUPABASE_URL", "https://maeistbokyjhewrrisvf.supabase.co")
-            return f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
+            manual_url = f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
+            return manual_url
         except Exception as e:
             logger.error(f"Error getting public URL: {str(e)}")
             
             # Last resort fallback
             supabase_url = os.getenv("SUPABASE_URL", "https://maeistbokyjhewrrisvf.supabase.co")
-            return f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
+            fallback_url = f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
+            return fallback_url
     
     async def download_file(self, filename: str, local_path: str) -> bool:
         """Download a file from Supabase storage to a local path"""
@@ -172,6 +179,10 @@ class SupabaseStorageHandler:
                 
                 # Construct public URL
                 public_url = f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
+                
+                # Remove trailing question mark if present
+                if public_url.endswith('?'):
+                    public_url = public_url[:-1]
                 
                 response = requests.get(public_url, stream=True)
                 
