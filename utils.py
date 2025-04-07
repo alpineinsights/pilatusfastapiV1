@@ -13,6 +13,8 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from typing import Dict, Optional, List
 import streamlit as st
 from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by_name, get_all_companies
+import base64
+import uuid
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +36,130 @@ except KeyError:
     AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "eu-central-2")
     S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "alpineinsights")
     QUARTR_API_KEY = os.getenv("QUARTR_API_KEY", "")
+
+# Initialize Supabase client for storage
+@st.cache_resource
+def init_supabase_storage_client():
+    """Initialize and cache the Supabase client for storage operations"""
+    from supabase_client import init_client
+    return init_client()
+
+class SupabaseStorageHandler:
+    """Handler for Supabase storage operations"""
+    
+    def __init__(self):
+        self.client = init_supabase_storage_client()
+        self.bucket_name = "alpinedatalake"
+        
+        # Check if bucket exists and create it if it doesn't
+        try:
+            self._ensure_bucket_exists()
+        except Exception as e:
+            logger.error(f"Error initializing Supabase storage bucket: {str(e)}")
+    
+    def _ensure_bucket_exists(self):
+        """Ensure the storage bucket exists"""
+        if self.client:
+            try:
+                # Check if bucket exists by listing buckets
+                buckets = self.client.storage.list_buckets()
+                bucket_names = [bucket["name"] for bucket in buckets]
+                
+                if self.bucket_name not in bucket_names:
+                    logger.info(f"Creating Supabase storage bucket: {self.bucket_name}")
+                    self.client.storage.create_bucket(self.bucket_name, {"public": True})
+                    logger.info(f"Successfully created Supabase storage bucket: {self.bucket_name}")
+            except Exception as e:
+                logger.error(f"Error checking/creating Supabase bucket: {str(e)}")
+    
+    def create_filename(self, company_name: str, event_date: str, event_title: str, 
+                       doc_type: str, original_filename: str) -> str:
+        """Create a standardized filename with company, date, and type"""
+        # Sanitize inputs to be safe for filenames
+        safe_company = company_name.lower().replace(' ', '_').replace('-', '_')
+        safe_date = event_date.replace('-', '')
+        safe_title = event_title.lower().replace(' ', '_')[:30]  # Truncate to avoid very long filenames
+        
+        # Get file extension from original filename
+        _, ext = os.path.splitext(original_filename)
+        if not ext:
+            ext = '.pdf'  # Default extension if none is found
+        
+        # Create path format: company/type/company_date_type.ext
+        filename = f"{safe_company}/{doc_type}/{safe_company}_{safe_date}_{doc_type}{ext}"
+        return filename
+    
+    async def upload_file(self, file_data: bytes, filename: str, content_type: str = 'application/pdf') -> bool:
+        """Upload a file to Supabase storage
+        
+        Args:
+            file_data: The binary file data
+            filename: The target filename including path
+            content_type: The MIME type of the file
+        
+        Returns:
+            bool: True if upload was successful
+        """
+        if not self.client:
+            logger.error("Supabase client not initialized")
+            return False
+            
+        try:
+            # Upload file to Supabase storage
+            response = self.client.storage.from_(self.bucket_name).upload(
+                path=filename,
+                file=file_data,
+                file_options={"content-type": content_type}
+            )
+            
+            logger.info(f"Successfully uploaded {filename} to Supabase bucket {self.bucket_name}")
+            return True
+        except Exception as e:
+            logger.error(f"Error uploading file to Supabase storage: {str(e)}")
+            return False
+    
+    def get_public_url(self, filename: str) -> str:
+        """Get the public URL for a file in Supabase storage"""
+        if not self.client:
+            return ""
+            
+        try:
+            url = self.client.storage.from_(self.bucket_name).get_public_url(filename)
+            return url
+        except Exception as e:
+            logger.error(f"Error getting public URL: {str(e)}")
+            return ""
+    
+    async def download_file(self, filename: str, local_path: str) -> bool:
+        """Download a file from Supabase storage to a local path
+        
+        Args:
+            filename: The source filename in Supabase storage
+            local_path: The local path to save the file
+        
+        Returns:
+            bool: True if download was successful
+        """
+        if not self.client:
+            logger.error("Supabase client not initialized")
+            return False
+            
+        try:
+            # Create the directory if it doesn't exist
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            
+            # Download the file from Supabase storage
+            response = self.client.storage.from_(self.bucket_name).download(filename)
+            
+            # Write the file to disk
+            with open(local_path, 'wb') as f:
+                f.write(response)
+            
+            logger.info(f"Successfully downloaded {filename} to {local_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Error downloading file from Supabase storage: {str(e)}")
+            return False
 
 class QuartrAPI:
     def __init__(self):

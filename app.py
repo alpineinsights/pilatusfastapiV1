@@ -7,7 +7,7 @@ import uuid
 import google.generativeai as genai
 import time
 import logging
-from utils import QuartrAPI, S3Handler, TranscriptProcessor
+from utils import QuartrAPI, SupabaseStorageHandler, TranscriptProcessor
 import aiohttp
 import asyncio
 from typing import List, Dict, Tuple, Any, Optional
@@ -58,6 +58,8 @@ if "documents_fetched" not in st.session_state:
     st.session_state.documents_fetched = False
 if "conversation_context" not in st.session_state:
     st.session_state.conversation_context = []
+if "storage_provider" not in st.session_state:
+    st.session_state.storage_provider = "supabase"  # Use Supabase by default
 
 # Load credentials from Streamlit secrets - using flat structure
 try:
@@ -379,7 +381,7 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
         async with aiohttp.ClientSession() as session:
             # Initialize API and handlers
             quartr_api = QuartrAPI()
-            s3_handler = S3Handler()
+            storage_handler = SupabaseStorageHandler()
             transcript_processor = TranscriptProcessor()
             
             # Get company data from Quartr API using company ID
@@ -425,22 +427,24 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
                                 if '?' in original_filename:
                                     original_filename = original_filename.split('?')[0]
                                 
-                                filename = s3_handler.create_filename(
+                                filename = storage_handler.create_filename(
                                     company_name, event_date, event_title, 'slides', original_filename
                                 )
                                 
-                                success = await s3_handler.upload_file(
-                                    content, filename, S3_BUCKET_NAME, 
+                                success = await storage_handler.upload_file(
+                                    content, filename, 
                                     response.headers.get('content-type', 'application/pdf')
                                 )
                                 
                                 if success:
+                                    public_url = storage_handler.get_public_url(filename)
                                     processed_files.append({
                                         'filename': filename,
                                         'type': 'slides',
                                         'event_date': event_date,
                                         'event_title': event_title,
-                                        's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
+                                        'url': public_url,
+                                        'storage_type': 'supabase'
                                     })
                                     pdf_count += 1
                     except Exception as e:
@@ -458,22 +462,24 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
                                 if '?' in original_filename:
                                     original_filename = original_filename.split('?')[0]
                                 
-                                filename = s3_handler.create_filename(
+                                filename = storage_handler.create_filename(
                                     company_name, event_date, event_title, 'report', original_filename
                                 )
                                 
-                                success = await s3_handler.upload_file(
-                                    content, filename, S3_BUCKET_NAME, 
+                                success = await storage_handler.upload_file(
+                                    content, filename, 
                                     response.headers.get('content-type', 'application/pdf')
                                 )
                                 
                                 if success:
+                                    public_url = storage_handler.get_public_url(filename)
                                     processed_files.append({
                                         'filename': filename,
                                         'type': 'report',
                                         'event_date': event_date,
                                         'event_title': event_title,
-                                        's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
+                                        'url': public_url,
+                                        'storage_type': 'supabase'
                                     })
                                     report_count += 1
                     except Exception as e:
@@ -498,21 +504,23 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
                                 company_name, event_title, event_date, transcript_text
                             )
                             
-                            filename = s3_handler.create_filename(
+                            filename = storage_handler.create_filename(
                                 company_name, event_date, event_title, 'transcript', 'transcript.pdf'
                             )
                             
-                            success = await s3_handler.upload_file(
-                                pdf_data, filename, S3_BUCKET_NAME, 'application/pdf'
+                            success = await storage_handler.upload_file(
+                                pdf_data, filename, 'application/pdf'
                             )
                             
                             if success:
+                                public_url = storage_handler.get_public_url(filename)
                                 processed_files.append({
                                     'filename': filename,
                                     'type': 'transcript',
                                     'event_date': event_date,
                                     'event_title': event_title,
-                                    's3_url': f"s3://{S3_BUCKET_NAME}/{filename}"
+                                    'url': public_url,
+                                    'storage_type': 'supabase'
                                 })
                                 transcript_count += 1
                     except Exception as e:
@@ -525,54 +533,52 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
         st.error(f"Error processing company documents: {str(e)}")
         return []
 
-# Function to download files from S3 to temporary location
-def download_files_from_s3(file_infos: List[Dict]) -> List[str]:
-    """Download files from S3 to temporary location and return local paths"""
+# Function to download files from storage to temporary location
+def download_files_from_storage(file_infos: List[Dict]) -> List[str]:
+    """Download files from Supabase storage to temporary location and return local paths"""
     try:
-        s3_client = boto3.client(
-            's3',
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=AWS_DEFAULT_REGION
-        )
+        storage_handler = SupabaseStorageHandler()
         
         temp_dir = tempfile.mkdtemp()
         local_files = []
         
+        # Create a new event loop for async operations
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        
         for file_info in file_infos:
             try:
-                s3_path = file_info['s3_url'].replace('s3://', '')
-                bucket, key = s3_path.split('/', 1)
+                filename = file_info['filename']
                 
-                # Replace "/" in filenames with "-" to avoid directory structure issues
-                safe_filename = file_info['filename'].replace('/', '-')
+                # Replace "/" in filenames with "-" to avoid directory structure issues in local path
+                safe_filename = filename.replace('/', '-')
                 local_path = os.path.join(temp_dir, safe_filename)
                 
                 # Log the download attempt
-                logger.info(f"Downloading {key} from S3 bucket {bucket} to {local_path}")
-                
-                # Create the directory if it doesn't exist
-                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                logger.info(f"Downloading {filename} from Supabase storage to {local_path}")
                 
                 # Download the file
-                s3_client.download_file(bucket, key, local_path)
+                success = loop.run_until_complete(storage_handler.download_file(filename, local_path))
                 
                 # Verify the file exists and has content
-                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                if success and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
                     local_files.append(local_path)
                     logger.info(f"Successfully downloaded {local_path}")
                 else:
-                    logger.error(f"File {local_path} was downloaded but is empty or missing")
+                    logger.error(f"File {local_path} was not downloaded properly")
             except Exception as e:
-                logger.error(f"Error downloading file from S3: {str(e)}")
+                logger.error(f"Error downloading file from storage: {str(e)}")
                 continue
         
+        # Close the event loop
+        loop.close()
+        
         if not local_files:
-            logger.error("No files were successfully downloaded from S3")
+            logger.error("No files were successfully downloaded from storage")
         
         return local_files
     except Exception as e:
-        logger.error(f"Error initializing S3 client: {str(e)}")
+        logger.error(f"Error downloading files: {str(e)}")
         return []
 
 # Function to query Gemini with file context
@@ -785,11 +791,11 @@ def main():
                 # Process the user query with fetched documents (for both new and follow-up questions)
                 if st.session_state.processed_files:
                     with st.spinner("Processing your query with multiple AI models..."):
-                        # Download files from S3
-                        local_files = download_files_from_s3(st.session_state.processed_files)
+                        # Download files from storage
+                        local_files = download_files_from_storage(st.session_state.processed_files)
                         
                         if not local_files:
-                            response = "Error downloading files from S3. Please check your AWS credentials."
+                            response = "Error downloading files from storage. Please check your connection."
                             response_placeholder.markdown(response)
                             st.session_state.chat_history.append({"role": "assistant", "content": response})
                             # Clean up
@@ -856,16 +862,22 @@ def main():
                         # Add document sources under "Company data" sub-header
                         sources_section += "\n#### Company data\n"
                         for i, file_info in enumerate(st.session_state.processed_files, 1):
-                            s3_url = file_info['s3_url']
-                            
-                            if s3_url.startswith('s3://'):
-                                s3_path = s3_url[5:]
-                                parts = s3_path.split('/', 1)
-                                if len(parts) == 2:
-                                    bucket, key = parts
-                                    https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
-                                    filename = os.path.basename(key)
-                                    sources_section += f"{i}. [{filename}]({https_url})\n"
+                            # Get the URL based on storage type
+                            if file_info.get('storage_type') == 'supabase' and 'url' in file_info:
+                                url = file_info['url']
+                                filename = os.path.basename(file_info['filename'])
+                                sources_section += f"{i}. [{filename}]({url})\n"
+                            else:
+                                # Fallback for legacy S3 URLs
+                                s3_url = file_info.get('s3_url', '')
+                                if s3_url.startswith('s3://'):
+                                    s3_path = s3_url[5:]
+                                    parts = s3_path.split('/', 1)
+                                    if len(parts) == 2:
+                                        bucket, key = parts
+                                        https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
+                                        filename = os.path.basename(key)
+                                        sources_section += f"{i}. [{filename}]({https_url})\n"
                         
                         # Add Perplexity attribution and citations under "Web sources" sub-header
                         sources_section += "\n#### Web sources\n"
