@@ -523,9 +523,7 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
 def download_files_from_storage(file_infos: List[Dict]) -> List[str]:
     """Download files from Supabase storage to temporary location and return local paths"""
     try:
-        # Initialize Supabase storage handler
         supabase_handler = SupabaseStorageHandler()
-        
         temp_dir = tempfile.mkdtemp()
         local_files = []
         
@@ -533,38 +531,26 @@ def download_files_from_storage(file_infos: List[Dict]) -> List[str]:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
+        # Download files
         for file_info in file_infos:
             try:
                 filename = file_info['filename']
-                
-                # Replace "/" in filenames with "-" to avoid directory structure issues in local path
                 safe_filename = filename.replace('/', '-')
                 local_path = os.path.join(temp_dir, safe_filename)
                 
-                # Create directory for local file
-                os.makedirs(os.path.dirname(local_path), exist_ok=True)
-                
-                # Log the download attempt
                 logger.info(f"Downloading {filename} from Supabase storage to {local_path}")
-                
-                # Use the Supabase handler to download the file
                 success = loop.run_until_complete(supabase_handler.download_file(filename, local_path))
                 
-                # If download was successful, add to list of local files
                 if success:
                     local_files.append(local_path)
                     logger.info(f"Successfully downloaded {local_path}")
-                else:
-                    logger.error(f"Failed to download {filename}")
             except Exception as e:
-                logger.error(f"Error downloading file from storage: {str(e)}")
-                continue
+                logger.error(f"Error downloading file: {str(e)}")
         
-        # Close the event loop
         loop.close()
         
         if not local_files:
-            logger.error("No files were successfully downloaded from Supabase storage")
+            logger.error("No files were successfully downloaded")
         
         return local_files
     except Exception as e:

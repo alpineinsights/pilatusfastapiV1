@@ -18,46 +18,26 @@ def init_client():
     Initialize and cache the Supabase client connection
     """
     try:
-        # Use the provided explicit Supabase credentials
+        # Use the hardcoded credentials as fallback
         supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
         supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1hZWlzdGJva3lqaGV3cnJpc3ZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMxNTgyMTUsImV4cCI6MjA1ODczNDIxNX0._Fb4I1BvmqMHbB5KyrtlEmPTyF8nRgR9LsmNFmiZSN8"
         
-        # Debug - log available secret keys
+        # Override with values from secrets if available
         if hasattr(st, 'secrets'):
-            logger.info(f"Available secret keys: {list(st.secrets.keys())}")
-        
-        # Try different potential key names
-        if hasattr(st, 'secrets'):
-            # Try different potential key names for URL
-            potential_url_keys = ['supabase_url', 'SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL']
-            for key in potential_url_keys:
+            # Check for URL in various possible keys
+            for key in ['supabase_url', 'SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL']:
                 if key in st.secrets:
                     supabase_url = st.secrets[key]
-                    logger.info(f"Found Supabase URL with key: {key}")
                     break
                     
-            # Try different potential key names for anon key
-            potential_anon_keys = ['supabase_anon_key', 'SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_ANON_KEY']
-            for key in potential_anon_keys:
+            # Check for API key in various possible keys
+            for key in ['supabase_anon_key', 'SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_ANON_KEY']:
                 if key in st.secrets:
                     supabase_key = st.secrets[key]
-                    logger.info(f"Found Supabase anon key with key: {key}")
                     break
                 
-        logger.info(f"Initializing Supabase client with URL: {supabase_url}")
+        # Initialize the client
         client = create_client(supabase_url, supabase_key)
-        
-        # Test client connection
-        try:
-            storage_buckets = client.storage.list_buckets()
-            logger.info(f"Successfully connected to Supabase! Found {len(storage_buckets)} storage buckets.")
-            # List the bucket names
-            bucket_names = [bucket["name"] for bucket in storage_buckets]
-            logger.info(f"Available buckets: {bucket_names}")
-        except Exception as conn_error:
-            logger.warning(f"Connected to Supabase but couldn't list buckets: {str(conn_error)}")
-        
-        logger.info("Supabase client initialized successfully")
         return client
         
     except Exception as e:
