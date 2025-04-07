@@ -60,13 +60,13 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
     Returns a list of processed document information
     """
     # Import here to avoid circular imports
-    from utils import QuartrAPI, SupabaseStorageHandler, TranscriptProcessor
+    from utils import QuartrAPI, AWSS3StorageHandler, TranscriptProcessor
     
     try:
         async with aiohttp.ClientSession() as session:
             # Initialize API and handlers
             quartr_api = QuartrAPI()
-            storage_handler = SupabaseStorageHandler()
+            storage_handler = AWSS3StorageHandler()
             transcript_processor = TranscriptProcessor()
             
             # Get company data from Quartr API using company ID
