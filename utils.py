@@ -1,6 +1,4 @@
 import aiohttp
-import aioboto3
-import boto3
 import io
 import json
 import logging
@@ -44,33 +42,60 @@ class SupabaseStorageHandler:
         self.client = init_supabase_storage_client()
         self.bucket_name = "alpinedatalake"
         
-        # Check if bucket exists and create it if it doesn't
+        # Ensure the credentials are correctly set for accessing the bucket
         try:
-            self._ensure_bucket_exists()
+            self._verify_bucket_access()
         except Exception as e:
-            logger.error(f"Error initializing Supabase storage bucket: {str(e)}")
+            logger.error(f"Error verifying access to Supabase storage bucket: {str(e)}")
     
-    def _ensure_bucket_exists(self):
-        """Ensure the storage bucket exists"""
+    def _verify_bucket_access(self):
+        """Verify access to the existing bucket without trying to create it"""
         if self.client:
             try:
+                logger.info("Attempting to list available storage buckets")
                 # Check if bucket exists by listing buckets
                 buckets = self.client.storage.list_buckets()
                 bucket_names = [bucket["name"] for bucket in buckets]
+                logger.info(f"Found buckets: {bucket_names}")
                 
-                if self.bucket_name not in bucket_names:
-                    logger.info(f"Creating Supabase storage bucket: {self.bucket_name}")
-                    # Create the bucket with public setting
-                    self.client.storage.create_bucket(
-                        id=self.bucket_name,  # Using the id param to match API expectations
-                        options={
-                            "public": True,
-                            "file_size_limit": 52428800  # 50MB limit
-                        }
-                    )
-                    logger.info(f"Successfully created bucket: {self.bucket_name}")
+                # Just verify the bucket exists
+                if self.bucket_name in bucket_names:
+                    logger.info(f"Found existing bucket: {self.bucket_name}")
+                    
+                    # Try listing objects in the bucket to verify access permissions
+                    try:
+                        logger.info(f"Testing access to bucket: {self.bucket_name}")
+                        files = self.client.storage.from_(self.bucket_name).list()
+                        logger.info(f"Successfully accessed bucket. Found {len(files)} files/folders")
+                    except Exception as access_error:
+                        logger.warning(f"Found bucket but couldn't list contents: {str(access_error)}")
+                else:
+                    logger.warning(f"Bucket {self.bucket_name} not found in available buckets: {bucket_names}")
+                    logger.warning("Will attempt to use it anyway - ensure it exists in Supabase and has proper permissions")
+                    
+                    # Try direct API access to verify the bucket exists
+                    try:
+                        logger.info("Attempting to verify bucket existence through direct API call")
+                        if hasattr(self.client, 'supabase_url') and hasattr(self.client, 'rest_url'):
+                            url = f"{self.client.supabase_url}/storage/v1/bucket/{self.bucket_name}"
+                            # Get auth header
+                            anon_key = None
+                            if hasattr(st, 'secrets') and 'supabase_anon_key' in st.secrets:
+                                anon_key = st.secrets['supabase_anon_key']
+                            elif hasattr(st, 'secrets') and 'NEXT_PUBLIC_SUPABASE_ANON_KEY' in st.secrets:
+                                anon_key = st.secrets['NEXT_PUBLIC_SUPABASE_ANON_KEY']
+                                
+                            if anon_key:
+                                headers = {"Authorization": f"Bearer {anon_key}"}
+                                response = requests.get(url, headers=headers)
+                                logger.info(f"Bucket verification API response: {response.status_code}")
+                                if response.status_code == 200:
+                                    logger.info("Bucket exists according to direct API call")
+                    except Exception as api_error:
+                        logger.error(f"Error verifying bucket through API: {str(api_error)}")
             except Exception as e:
-                logger.error(f"Error checking/creating Supabase bucket: {str(e)}")
+                logger.error(f"Error checking Supabase buckets: {str(e)}")
+                logger.warning(f"Will attempt to use bucket {self.bucket_name} anyway - ensure it exists and has proper permissions")
     
     def create_filename(self, company_name: str, event_date: str, event_title: str, 
                        doc_type: str, original_filename: str) -> str:
@@ -103,16 +128,26 @@ class SupabaseStorageHandler:
         if not self.client:
             logger.error("Supabase client not initialized")
             return False
+        
+        # Debug info - print available secret keys
+        if hasattr(st, 'secrets'):
+            logger.info(f"Available secret keys: {list(st.secrets.keys())}")
             
         try:
-            # Upload file to Supabase storage using upsert to overwrite if exists
+            # Format options according to Supabase API expectations
+            # Note: Supabase Storage expects this specific format
+            upload_options = {}
+            if content_type:
+                upload_options["contentType"] = content_type
+            upload_options["upsert"] = "true"  # As string, not boolean
+            
+            logger.info(f"Uploading file to {self.bucket_name}/{filename}")
+            
+            # Upload file to Supabase storage
             response = self.client.storage.from_(self.bucket_name).upload(
                 path=filename,
                 file=file_data,
-                file_options={
-                    "content-type": content_type,
-                    "upsert": True  # Overwrite if exists
-                }
+                file_options=upload_options
             )
             
             logger.info(f"Successfully uploaded {filename} to Supabase bucket {self.bucket_name}")
@@ -124,12 +159,34 @@ class SupabaseStorageHandler:
             try:
                 logger.info(f"Attempting direct HTTP upload for {filename}")
                 
-                # Get Supabase URL and key
-                supabase_url = self.client.supabase_url if hasattr(self.client, 'supabase_url') else None
-                supabase_key = self.client._config.auth.get('api_key', None) if hasattr(self.client, '_config') else None
+                # Always use the explicit values first
+                supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
+                supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1hZWlzdGJva3lqaGV3cnJpc3ZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMxNTgyMTUsImV4cCI6MjA1ODczNDIxNX0._Fb4I1BvmqMHbB5KyrtlEmPTyF8nRgR9LsmNFmiZSN8"
                 
-                if not supabase_url or not supabase_key:
-                    logger.error("Missing Supabase URL or key for direct upload")
+                # Log which credentials we're attempting to use
+                logger.info(f"Using direct URL: {supabase_url}")
+                logger.info(f"Key available: {'Yes' if supabase_key else 'No'}")
+                
+                # Override with values from secrets if available
+                if hasattr(st, 'secrets'):
+                    # Check all possible key names
+                    potential_url_keys = ['supabase_url', 'SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL']
+                    potential_anon_keys = ['supabase_anon_key', 'SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_ANON_KEY']
+                    
+                    for key in potential_url_keys:
+                        if key in st.secrets:
+                            supabase_url = st.secrets[key]
+                            logger.info(f"Found URL in secrets with key: {key}")
+                            break
+                    
+                    for key in potential_anon_keys:
+                        if key in st.secrets:
+                            supabase_key = st.secrets[key]
+                            logger.info(f"Found anon key in secrets with key: {key}")
+                            break
+                
+                if not supabase_key:
+                    logger.error("Missing Supabase key for direct upload")
                     return False
                 
                 url = f"{supabase_url}/storage/v1/object/{self.bucket_name}/{filename}"
@@ -137,6 +194,9 @@ class SupabaseStorageHandler:
                     "Authorization": f"Bearer {supabase_key}",
                     "Content-Type": content_type
                 }
+                
+                # Log request details
+                logger.info(f"Making POST request to URL: {url}")
                 
                 response = requests.post(
                     url,
@@ -160,17 +220,28 @@ class SupabaseStorageHandler:
             return ""
             
         try:
+            # First attempt to use the client method
             url = self.client.storage.from_(self.bucket_name).get_public_url(filename)
-            return url
+            if url:
+                return url
+                
+            # If that fails, construct the URL manually
+            supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
+            
+            # Override with values from secrets if available
+            if hasattr(st, 'secrets') and 'supabase_url' in st.secrets:
+                supabase_url = st.secrets['supabase_url']
+                
+            # Construct public URL
+            return f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
         except Exception as e:
             logger.error(f"Error getting public URL: {str(e)}")
-            # Fallback to constructing the URL manually
-            try:
-                if hasattr(self.client, 'supabase_url'):
-                    return f"{self.client.supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
-            except:
-                pass
-            return ""
+            
+            # Last resort fallback
+            supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
+            if hasattr(st, 'secrets') and 'supabase_url' in st.secrets:
+                supabase_url = st.secrets['supabase_url']
+            return f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
     
     async def download_file(self, filename: str, local_path: str) -> bool:
         """Download a file from Supabase storage to a local path
@@ -186,10 +257,12 @@ class SupabaseStorageHandler:
             logger.error("Supabase client not initialized")
             return False
             
+        # Create the directory if it doesn't exist
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        
+        # First try Supabase client method
         try:
-            # Create the directory if it doesn't exist
-            os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            
+            logger.info(f"Attempting to download {filename} using Supabase client")
             # Download the file from Supabase storage
             response = self.client.storage.from_(self.bucket_name).download(filename)
             
@@ -197,36 +270,50 @@ class SupabaseStorageHandler:
             with open(local_path, 'wb') as f:
                 f.write(response)
             
-            logger.info(f"Successfully downloaded {filename} to {local_path}")
-            return True
+            # Verify file was downloaded successfully
+            if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                logger.info(f"Successfully downloaded {filename} to {local_path}")
+                return True
+            else:
+                logger.warning(f"Downloaded file exists but is empty: {local_path}")
         except Exception as e:
-            logger.error(f"Error downloading file from Supabase storage: {str(e)}")
+            logger.error(f"Error downloading file using Supabase client: {str(e)}")
+        
+        # If client download fails, try direct HTTP method
+        try:
+            logger.info(f"Attempting direct HTTP download for {filename}")
             
-            # Try alternative direct HTTP method if Python client fails
-            try:
-                logger.info(f"Attempting direct HTTP download for {filename}")
-                
-                # Get public URL
-                public_url = self.get_public_url(filename)
-                if not public_url:
-                    logger.error("Failed to get public URL for direct download")
-                    return False
-                
-                response = requests.get(public_url, stream=True)
-                if response.status_code == 200:
-                    with open(local_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    
-                    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-                        logger.info(f"Direct HTTP download successful for {filename}")
-                        return True
-                    
-                logger.error(f"Direct HTTP download failed: {response.status_code}")
-            except Exception as fallback_error:
-                logger.error(f"Direct HTTP download attempt failed: {str(fallback_error)}")
+            # Get the direct URL to the file
+            supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
+            bucket_name = self.bucket_name
             
-            return False
+            # Override with values from secrets if available
+            if hasattr(st, 'secrets') and 'supabase_url' in st.secrets:
+                supabase_url = st.secrets['supabase_url']
+            
+            # Construct public URL
+            public_url = f"{supabase_url}/storage/v1/object/public/{bucket_name}/{filename}"
+            logger.info(f"Attempting download from URL: {public_url}")
+            
+            response = requests.get(public_url, stream=True)
+            
+            if response.status_code == 200:
+                with open(local_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    logger.info(f"Direct HTTP download successful for {filename}")
+                    return True
+                else:
+                    logger.warning(f"Direct download created empty file: {local_path}")
+            else:
+                logger.error(f"Direct HTTP download failed: HTTP {response.status_code}")
+        except Exception as http_error:
+            logger.error(f"Direct HTTP download failed: {str(http_error)}")
+        
+        logger.error(f"All download methods failed for {filename}")
+        return False
 
 class QuartrAPI:
     def __init__(self):
@@ -472,64 +559,3 @@ class TranscriptProcessor:
         except Exception as e:
             logger.error(f"Error building PDF: {str(e)}")
             return b''
-
-class S3Handler:
-    def __init__(self):
-        if not all([AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION]):
-            raise ValueError("AWS credentials not found in environment variables")
-        self.session = aioboto3.Session(
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=AWS_DEFAULT_REGION
-        )
-        self.boto3_session = boto3.Session(
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-            region_name=AWS_DEFAULT_REGION
-        )
-
-    async def upload_file(self, file_data: bytes, filename: str, bucket_name: str, 
-                         content_type: str = 'application/pdf') -> bool:
-        """Upload file to S3 bucket"""
-        try:
-            async with self.session.client('s3') as s3:
-                await s3.put_object(
-                    Bucket=bucket_name,
-                    Key=filename,
-                    Body=file_data,
-                    ContentType=content_type
-                )
-                logger.info(f"Successfully uploaded {filename} to S3 bucket {bucket_name}")
-                return True
-        except Exception as e:
-            logger.error(f"Error uploading to S3: {str(e)}")
-            return False
-
-    def create_filename(self, company_name: str, event_date: str, event_title: str,
-                       doc_type: str, original_filename: str) -> str:
-        """Create standardized filename for S3"""
-        clean_company = company_name.replace(" ", "_").replace("/", "_").lower()
-        clean_event = event_title.replace(" ", "_").lower()
-        clean_date = event_date.split("T")[0]
-        
-        # Remove any URL query parameters from the original filename
-        if '?' in original_filename:
-            original_filename = original_filename.split('?')[0]
-        
-        # Always use PDF extension for transcripts
-        file_extension = "pdf" if doc_type == "transcript" else original_filename.split(".")[-1].lower()
-        return f"{clean_company}_{clean_date}_{clean_event}_{doc_type}.{file_extension}"
-    
-    def create_presigned_url(self, bucket_name: str, key: str, expiration: int = 3600) -> Optional[str]:
-        """Create a presigned URL for an S3 object"""
-        try:
-            s3_client = self.boto3_session.client('s3')
-            response = s3_client.generate_presigned_url(
-                'get_object',
-                Params={'Bucket': bucket_name, 'Key': key},
-                ExpiresIn=expiration
-            )
-            return response
-        except Exception as e:
-            logger.error(f"Error creating presigned URL: {str(e)}")
-            return None

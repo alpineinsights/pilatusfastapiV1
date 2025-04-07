@@ -547,31 +547,15 @@ def download_files_from_storage(file_infos: List[Dict]) -> List[str]:
                 # Log the download attempt
                 logger.info(f"Downloading {filename} from Supabase storage to {local_path}")
                 
-                # Try direct download from Supabase storage
+                # Use the Supabase handler to download the file
                 success = loop.run_until_complete(supabase_handler.download_file(filename, local_path))
                 
-                # If Supabase download fails but we have a URL, try direct HTTP download
-                if not success and 'url' in file_info:
-                    try:
-                        logger.info(f"Attempting direct download from URL: {file_info['url']}")
-                        import requests
-                        response = requests.get(file_info['url'], stream=True)
-                        if response.status_code == 200:
-                            with open(local_path, 'wb') as f:
-                                for chunk in response.iter_content(chunk_size=8192):
-                                    f.write(chunk)
-                            success = os.path.exists(local_path) and os.path.getsize(local_path) > 0
-                            if success:
-                                logger.info(f"Direct URL download successful for {filename}")
-                    except Exception as url_error:
-                        logger.error(f"Direct URL download failed: {str(url_error)}")
-                
-                # Add file to list if download was successful
-                if success and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                # If download was successful, add to list of local files
+                if success:
                     local_files.append(local_path)
                     logger.info(f"Successfully downloaded {local_path}")
                 else:
-                    logger.error(f"File {local_path} was not downloaded properly")
+                    logger.error(f"Failed to download {filename}")
             except Exception as e:
                 logger.error(f"Error downloading file from storage: {str(e)}")
                 continue

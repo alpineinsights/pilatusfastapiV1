@@ -18,44 +18,47 @@ def init_client():
     Initialize and cache the Supabase client connection
     """
     try:
-        # Show available secret keys for debugging
-        # st.write("Available secret keys at root level:", list(st.secrets.keys()))
-        
-        # First try to get the service role key for higher privileges
-        supabase_service_key = None
-        if "supabase_service_role_key" in st.secrets:
-            supabase_service_key = st.secrets["supabase_service_role_key"]
-            logger.info("Found service role key for Supabase")
-        
-        # Try different paths to access Supabase settings
-        if "supabase_url" in st.secrets and "supabase_anon_key" in st.secrets:
-            supabase_url = st.secrets["supabase_url"]
-            # Use service role key for admin operations if available, otherwise use anon key
-            supabase_key = supabase_service_key or st.secrets["supabase_anon_key"]
-            return create_client(supabase_url, supabase_key)
-        elif "connections" in st.secrets and "supabase" in st.secrets["connections"]:
-            # If connection details exist, create the URL and try to find the key
-            conn_info = st.secrets["connections"]["supabase"]
-            if "host" in conn_info:
-                host = conn_info["host"].replace("db.", "")
-                supabase_url = f"https://{host}"
-                
-                # Look for the keys in order of preference
-                if supabase_service_key:
-                    return create_client(supabase_url, supabase_service_key)
-                elif "supabase_anon_key" in st.secrets:
-                    supabase_key = st.secrets["supabase_anon_key"]
-                    return create_client(supabase_url, supabase_key)
-                else:
-                    st.error("Found Supabase host but missing API key")
-        
-        # Hard-code values as a last resort
+        # Use the provided explicit Supabase credentials
         supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
-        # For storage operations, we need a service role key with higher privileges
-        # This is a fallback and should be replaced with proper secrets
-        supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1hZWlzdGJva3lqaGV3cnJpc3ZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTE2MzQxMzYsImV4cCI6MjAyNzIxMDEzNn0.pA5zcX2y7FHxcCg6-3yxK78KYtPK6W5B7NqocYh_tRY"
-        st.warning("Using hardcoded connection details as fallback - storage operations may be limited due to permission constraints")
-        return create_client(supabase_url, supabase_key)
+        supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1hZWlzdGJva3lqaGV3cnJpc3ZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMxNTgyMTUsImV4cCI6MjA1ODczNDIxNX0._Fb4I1BvmqMHbB5KyrtlEmPTyF8nRgR9LsmNFmiZSN8"
+        
+        # Debug - log available secret keys
+        if hasattr(st, 'secrets'):
+            logger.info(f"Available secret keys: {list(st.secrets.keys())}")
+        
+        # Try different potential key names
+        if hasattr(st, 'secrets'):
+            # Try different potential key names for URL
+            potential_url_keys = ['supabase_url', 'SUPABASE_URL', 'NEXT_PUBLIC_SUPABASE_URL']
+            for key in potential_url_keys:
+                if key in st.secrets:
+                    supabase_url = st.secrets[key]
+                    logger.info(f"Found Supabase URL with key: {key}")
+                    break
+                    
+            # Try different potential key names for anon key
+            potential_anon_keys = ['supabase_anon_key', 'SUPABASE_ANON_KEY', 'NEXT_PUBLIC_SUPABASE_ANON_KEY']
+            for key in potential_anon_keys:
+                if key in st.secrets:
+                    supabase_key = st.secrets[key]
+                    logger.info(f"Found Supabase anon key with key: {key}")
+                    break
+                
+        logger.info(f"Initializing Supabase client with URL: {supabase_url}")
+        client = create_client(supabase_url, supabase_key)
+        
+        # Test client connection
+        try:
+            storage_buckets = client.storage.list_buckets()
+            logger.info(f"Successfully connected to Supabase! Found {len(storage_buckets)} storage buckets.")
+            # List the bucket names
+            bucket_names = [bucket["name"] for bucket in storage_buckets]
+            logger.info(f"Available buckets: {bucket_names}")
+        except Exception as conn_error:
+            logger.warning(f"Connected to Supabase but couldn't list buckets: {str(conn_error)}")
+        
+        logger.info("Supabase client initialized successfully")
+        return client
         
     except Exception as e:
         st.error(f"Failed to initialize Supabase client: {str(e)}")
