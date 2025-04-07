@@ -6,7 +6,7 @@ import uuid
 import google.generativeai as genai
 import time
 import logging
-from utils import QuartrAPI, SupabaseStorageHandler, TranscriptProcessor
+from utils import QuartrAPI, AWSS3StorageHandler, TranscriptProcessor
 import aiohttp
 import asyncio
 from typing import List, Dict, Tuple, Any, Optional
@@ -367,7 +367,7 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
         async with aiohttp.ClientSession() as session:
             # Initialize API and handlers
             quartr_api = QuartrAPI()
-            storage_handler = SupabaseStorageHandler()
+            storage_handler = AWSS3StorageHandler()
             transcript_processor = TranscriptProcessor()
             
             # Get company data from Quartr API using company ID
@@ -520,10 +520,10 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
         return []
 
 # Function to download files from storage to temporary location
-def download_files_from_storage(file_infos: List[Dict]) -> List[str]:
-    """Download files from Supabase storage to temporary location and return local paths"""
+async def download_files_from_s3(file_urls: List[str]) -> List[str]:
+    """Download files from AWS S3 storage to temporary location and return local paths"""
     try:
-        supabase_handler = SupabaseStorageHandler()
+        aws_handler = AWSS3StorageHandler()
         temp_dir = tempfile.mkdtemp()
         local_files = []
         
@@ -532,14 +532,13 @@ def download_files_from_storage(file_infos: List[Dict]) -> List[str]:
         asyncio.set_event_loop(loop)
         
         # Download files
-        for file_info in file_infos:
+        for file_url in file_urls:
             try:
-                filename = file_info['filename']
-                safe_filename = filename.replace('/', '-')
+                safe_filename = file_url.replace('/', '-')
                 local_path = os.path.join(temp_dir, safe_filename)
                 
-                logger.info(f"Downloading {filename} from Supabase storage to {local_path}")
-                success = loop.run_until_complete(supabase_handler.download_file(filename, local_path))
+                logger.info(f"Downloading {file_url} from AWS S3 storage to {local_path}")
+                success = loop.run_until_complete(aws_handler.download_file(file_url, local_path))
                 
                 if success:
                     local_files.append(local_path)
@@ -768,7 +767,7 @@ def main():
                 if st.session_state.processed_files:
                     with st.spinner("Processing your query with multiple AI models..."):
                         # Download files from storage
-                        local_files = download_files_from_storage(st.session_state.processed_files)
+                        local_files = asyncio.run(download_files_from_s3([file_info['url'] for file_info in st.session_state.processed_files]))
                         
                         if not local_files:
                             response = "Error downloading files from storage. Please check your connection."
