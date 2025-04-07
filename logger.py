@@ -1,8 +1,17 @@
 import logging
+import sys
 
-# Create a logger instance that will be imported by other modules
-logger = logging.getLogger("financial_insights")
+# Configure logging
+logger = logging.getLogger("financial-insights")
 logger.setLevel(logging.INFO)
 
-# This logger will be configured by the setup_logging function in logging_config.py
-# We just create the instance here to avoid circular imports 
+# Create console handler
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+
+# Create formatter
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+console_handler.setFormatter(formatter)
+
+# Add handler to logger
+logger.addHandler(console_handler) 
