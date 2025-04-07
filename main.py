@@ -10,7 +10,7 @@ import google.generativeai as genai
 import anthropic
 from dotenv import load_dotenv
 from typing import Dict, List, Optional, Any, Tuple
-from utils import QuartrAPI, SupabaseStorageHandler, TranscriptProcessor
+from utils import QuartrAPI, AWSS3StorageHandler, TranscriptProcessor
 from supabase_client import get_quartrid_by_name
 from logger import logger
 from urllib.parse import urlparse  # For parsing citation URLs
@@ -292,7 +292,7 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
         async with aiohttp.ClientSession() as session:
             # Initialize API and handlers
             quartr_api = QuartrAPI()
-            storage_handler = SupabaseStorageHandler()
+            storage_handler = AWSS3StorageHandler()
             transcript_processor = TranscriptProcessor()
             
             # Get company data from Quartr API using company ID
