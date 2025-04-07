@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import os
-import boto3
 import tempfile
 import uuid
 import google.generativeai as genai
@@ -26,7 +25,6 @@ except ImportError:
     # Log warning instead of failing
     print("Warning: PyMuPDF (fitz) not installed. PDF generation functionality may be limited.")
 from anthropic import Anthropic
-from botocore.exceptions import NoCredentialsError
 from utils_helper import process_company_documents, initialize_claude
 from datetime import datetime
 from logging_config import setup_logging
@@ -58,17 +56,9 @@ if "documents_fetched" not in st.session_state:
     st.session_state.documents_fetched = False
 if "conversation_context" not in st.session_state:
     st.session_state.conversation_context = []
-if "storage_provider" not in st.session_state:
-    st.session_state.storage_provider = "supabase"  # Use Supabase by default
 
 # Load credentials from Streamlit secrets - using flat structure
 try:
-    # Access AWS credentials directly from root level
-    AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
-    AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
-    AWS_DEFAULT_REGION = st.secrets["AWS_DEFAULT_REGION"]
-    S3_BUCKET_NAME = st.secrets["S3_BUCKET_NAME"]
-    
     # Access API keys directly from root level
     GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
     QUARTR_API_KEY = st.secrets["QUARTR_API_KEY"]
@@ -80,10 +70,6 @@ try:
 except KeyError as e:
     st.error(f"Missing required secret: {str(e)}. Please configure your secrets in Streamlit Cloud.")
     # Provide default values for development
-    AWS_ACCESS_KEY_ID = os.environ.get("AWS_ACCESS_KEY_ID", "")
-    AWS_SECRET_ACCESS_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-    AWS_DEFAULT_REGION = os.environ.get("AWS_DEFAULT_REGION", "eu-central-2")
-    S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME", "alpineinsights")
     GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
     QUARTR_API_KEY = os.environ.get("QUARTR_API_KEY", "")
     PERPLEXITY_API_KEY = os.environ.get("PERPLEXITY_API_KEY", "")
@@ -537,7 +523,8 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
 def download_files_from_storage(file_infos: List[Dict]) -> List[str]:
     """Download files from Supabase storage to temporary location and return local paths"""
     try:
-        storage_handler = SupabaseStorageHandler()
+        # Initialize Supabase storage handler
+        supabase_handler = SupabaseStorageHandler()
         
         temp_dir = tempfile.mkdtemp()
         local_files = []
@@ -554,13 +541,32 @@ def download_files_from_storage(file_infos: List[Dict]) -> List[str]:
                 safe_filename = filename.replace('/', '-')
                 local_path = os.path.join(temp_dir, safe_filename)
                 
+                # Create directory for local file
+                os.makedirs(os.path.dirname(local_path), exist_ok=True)
+                
                 # Log the download attempt
                 logger.info(f"Downloading {filename} from Supabase storage to {local_path}")
                 
-                # Download the file
-                success = loop.run_until_complete(storage_handler.download_file(filename, local_path))
+                # Try direct download from Supabase storage
+                success = loop.run_until_complete(supabase_handler.download_file(filename, local_path))
                 
-                # Verify the file exists and has content
+                # If Supabase download fails but we have a URL, try direct HTTP download
+                if not success and 'url' in file_info:
+                    try:
+                        logger.info(f"Attempting direct download from URL: {file_info['url']}")
+                        import requests
+                        response = requests.get(file_info['url'], stream=True)
+                        if response.status_code == 200:
+                            with open(local_path, 'wb') as f:
+                                for chunk in response.iter_content(chunk_size=8192):
+                                    f.write(chunk)
+                            success = os.path.exists(local_path) and os.path.getsize(local_path) > 0
+                            if success:
+                                logger.info(f"Direct URL download successful for {filename}")
+                    except Exception as url_error:
+                        logger.error(f"Direct URL download failed: {str(url_error)}")
+                
+                # Add file to list if download was successful
                 if success and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
                     local_files.append(local_path)
                     logger.info(f"Successfully downloaded {local_path}")
@@ -574,11 +580,11 @@ def download_files_from_storage(file_infos: List[Dict]) -> List[str]:
         loop.close()
         
         if not local_files:
-            logger.error("No files were successfully downloaded from storage")
+            logger.error("No files were successfully downloaded from Supabase storage")
         
         return local_files
     except Exception as e:
-        logger.error(f"Error downloading files: {str(e)}")
+        logger.error(f"Error in download process: {str(e)}")
         return []
 
 # Function to query Gemini with file context
@@ -862,22 +868,11 @@ def main():
                         # Add document sources under "Company data" sub-header
                         sources_section += "\n#### Company data\n"
                         for i, file_info in enumerate(st.session_state.processed_files, 1):
-                            # Get the URL based on storage type
-                            if file_info.get('storage_type') == 'supabase' and 'url' in file_info:
+                            # Get URL from file info
+                            if 'url' in file_info:
                                 url = file_info['url']
                                 filename = os.path.basename(file_info['filename'])
                                 sources_section += f"{i}. [{filename}]({url})\n"
-                            else:
-                                # Fallback for legacy S3 URLs
-                                s3_url = file_info.get('s3_url', '')
-                                if s3_url.startswith('s3://'):
-                                    s3_path = s3_url[5:]
-                                    parts = s3_path.split('/', 1)
-                                    if len(parts) == 2:
-                                        bucket, key = parts
-                                        https_url = f"https://{bucket}.s3.{AWS_DEFAULT_REGION}.amazonaws.com/{key}"
-                                        filename = os.path.basename(key)
-                                        sources_section += f"{i}. [{filename}]({https_url})\n"
                         
                         # Add Perplexity attribution and citations under "Web sources" sub-header
                         sources_section += "\n#### Web sources\n"

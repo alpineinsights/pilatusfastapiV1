@@ -21,10 +21,17 @@ def init_client():
         # Show available secret keys for debugging
         # st.write("Available secret keys at root level:", list(st.secrets.keys()))
         
+        # First try to get the service role key for higher privileges
+        supabase_service_key = None
+        if "supabase_service_role_key" in st.secrets:
+            supabase_service_key = st.secrets["supabase_service_role_key"]
+            logger.info("Found service role key for Supabase")
+        
         # Try different paths to access Supabase settings
         if "supabase_url" in st.secrets and "supabase_anon_key" in st.secrets:
             supabase_url = st.secrets["supabase_url"]
-            supabase_key = st.secrets["supabase_anon_key"]
+            # Use service role key for admin operations if available, otherwise use anon key
+            supabase_key = supabase_service_key or st.secrets["supabase_anon_key"]
             return create_client(supabase_url, supabase_key)
         elif "connections" in st.secrets and "supabase" in st.secrets["connections"]:
             # If connection details exist, create the URL and try to find the key
@@ -33,17 +40,21 @@ def init_client():
                 host = conn_info["host"].replace("db.", "")
                 supabase_url = f"https://{host}"
                 
-                # Look for the anon key
-                if "supabase_anon_key" in st.secrets:
+                # Look for the keys in order of preference
+                if supabase_service_key:
+                    return create_client(supabase_url, supabase_service_key)
+                elif "supabase_anon_key" in st.secrets:
                     supabase_key = st.secrets["supabase_anon_key"]
                     return create_client(supabase_url, supabase_key)
                 else:
-                    st.error("Found Supabase host but missing anon key")
+                    st.error("Found Supabase host but missing API key")
         
         # Hard-code values as a last resort
         supabase_url = "https://maeistbokyjhewrrisvf.supabase.co"
+        # For storage operations, we need a service role key with higher privileges
+        # This is a fallback and should be replaced with proper secrets
         supabase_key = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1hZWlzdGJva3lqaGV3cnJpc3ZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3MTE2MzQxMzYsImV4cCI6MjAyNzIxMDEzNn0.pA5zcX2y7FHxcCg6-3yxK78KYtPK6W5B7NqocYh_tRY"
-        st.warning("Using hardcoded connection details as fallback")
+        st.warning("Using hardcoded connection details as fallback - storage operations may be limited due to permission constraints")
         return create_client(supabase_url, supabase_key)
         
     except Exception as e:

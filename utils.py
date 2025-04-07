@@ -15,6 +15,7 @@ import streamlit as st
 from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by_name, get_all_companies
 import base64
 import uuid
+import requests
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,18 +24,10 @@ logger = logging.getLogger(__name__)
 # Get environment variables
 try:
     # Access secrets using flat structure (matching Streamlit Cloud)
-    AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
-    AWS_SECRET_ACCESS_KEY = st.secrets["AWS_SECRET_ACCESS_KEY"]
-    AWS_DEFAULT_REGION = st.secrets["AWS_DEFAULT_REGION"]
-    S3_BUCKET_NAME = st.secrets["S3_BUCKET_NAME"]
     QUARTR_API_KEY = st.secrets["QUARTR_API_KEY"]
 except KeyError:
     # Log the error and set default values
     logger.error("Failed to access secrets with flat structure, using fallback values")
-    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
-    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
-    AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "eu-central-2")
-    S3_BUCKET_NAME = os.getenv("S3_BUCKET_NAME", "alpineinsights")
     QUARTR_API_KEY = os.getenv("QUARTR_API_KEY", "")
 
 # Initialize Supabase client for storage
@@ -67,8 +60,15 @@ class SupabaseStorageHandler:
                 
                 if self.bucket_name not in bucket_names:
                     logger.info(f"Creating Supabase storage bucket: {self.bucket_name}")
-                    self.client.storage.create_bucket(self.bucket_name, {"public": True})
-                    logger.info(f"Successfully created Supabase storage bucket: {self.bucket_name}")
+                    # Create the bucket with public setting
+                    self.client.storage.create_bucket(
+                        id=self.bucket_name,  # Using the id param to match API expectations
+                        options={
+                            "public": True,
+                            "file_size_limit": 52428800  # 50MB limit
+                        }
+                    )
+                    logger.info(f"Successfully created bucket: {self.bucket_name}")
             except Exception as e:
                 logger.error(f"Error checking/creating Supabase bucket: {str(e)}")
     
@@ -105,17 +105,53 @@ class SupabaseStorageHandler:
             return False
             
         try:
-            # Upload file to Supabase storage
+            # Upload file to Supabase storage using upsert to overwrite if exists
             response = self.client.storage.from_(self.bucket_name).upload(
                 path=filename,
                 file=file_data,
-                file_options={"content-type": content_type}
+                file_options={
+                    "content-type": content_type,
+                    "upsert": True  # Overwrite if exists
+                }
             )
             
             logger.info(f"Successfully uploaded {filename} to Supabase bucket {self.bucket_name}")
             return True
         except Exception as e:
             logger.error(f"Error uploading file to Supabase storage: {str(e)}")
+            
+            # Try direct HTTP method if Python client fails
+            try:
+                logger.info(f"Attempting direct HTTP upload for {filename}")
+                
+                # Get Supabase URL and key
+                supabase_url = self.client.supabase_url if hasattr(self.client, 'supabase_url') else None
+                supabase_key = self.client._config.auth.get('api_key', None) if hasattr(self.client, '_config') else None
+                
+                if not supabase_url or not supabase_key:
+                    logger.error("Missing Supabase URL or key for direct upload")
+                    return False
+                
+                url = f"{supabase_url}/storage/v1/object/{self.bucket_name}/{filename}"
+                headers = {
+                    "Authorization": f"Bearer {supabase_key}",
+                    "Content-Type": content_type
+                }
+                
+                response = requests.post(
+                    url,
+                    headers=headers,
+                    data=file_data
+                )
+                
+                if response.status_code in (200, 201):
+                    logger.info(f"Direct HTTP upload successful for {filename}")
+                    return True
+                
+                logger.error(f"Direct HTTP upload failed: {response.status_code} - {response.text}")
+            except Exception as fallback_error:
+                logger.error(f"Direct HTTP upload attempt failed: {str(fallback_error)}")
+            
             return False
     
     def get_public_url(self, filename: str) -> str:
@@ -128,6 +164,12 @@ class SupabaseStorageHandler:
             return url
         except Exception as e:
             logger.error(f"Error getting public URL: {str(e)}")
+            # Fallback to constructing the URL manually
+            try:
+                if hasattr(self.client, 'supabase_url'):
+                    return f"{self.client.supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
+            except:
+                pass
             return ""
     
     async def download_file(self, filename: str, local_path: str) -> bool:
@@ -159,6 +201,31 @@ class SupabaseStorageHandler:
             return True
         except Exception as e:
             logger.error(f"Error downloading file from Supabase storage: {str(e)}")
+            
+            # Try alternative direct HTTP method if Python client fails
+            try:
+                logger.info(f"Attempting direct HTTP download for {filename}")
+                
+                # Get public URL
+                public_url = self.get_public_url(filename)
+                if not public_url:
+                    logger.error("Failed to get public URL for direct download")
+                    return False
+                
+                response = requests.get(public_url, stream=True)
+                if response.status_code == 200:
+                    with open(local_path, 'wb') as f:
+                        for chunk in response.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                    
+                    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                        logger.info(f"Direct HTTP download successful for {filename}")
+                        return True
+                    
+                logger.error(f"Direct HTTP download failed: {response.status_code}")
+            except Exception as fallback_error:
+                logger.error(f"Direct HTTP download attempt failed: {str(fallback_error)}")
+            
             return False
 
 class QuartrAPI:
