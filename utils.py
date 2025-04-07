@@ -14,22 +14,22 @@ from supabase_client import get_company_names, get_isin_by_name, get_quartrid_by
 import base64
 import uuid
 import requests
+from functools import lru_cache
+
+# Load environment variables
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Get environment variables
-try:
-    # Access secrets using flat structure (matching Streamlit Cloud)
-    QUARTR_API_KEY = st.secrets["QUARTR_API_KEY"]
-except KeyError:
-    # Log the error and set default values
-    logger.error("Failed to access secrets with flat structure, using fallback values")
-    QUARTR_API_KEY = os.getenv("QUARTR_API_KEY", "")
+QUARTR_API_KEY = os.getenv("QUARTR_API_KEY", "")
+if not QUARTR_API_KEY:
+    logger.error("QUARTR_API_KEY not found in environment variables")
 
 # Initialize Supabase client for storage
-@st.cache_resource
+@lru_cache(maxsize=1)
 def init_supabase_storage_client():
     """Initialize and cache the Supabase client for storage operations"""
     from supabase_client import init_client
