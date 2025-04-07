@@ -6,6 +6,7 @@ A FastAPI application that enables financial professionals to get insights about
 
 - Accept JSON payloads with company name and query
 - Fetch financial documents from Quartr API using company IDs
+- Store and serve documents through AWS S3
 - Three-step LLM chain for comprehensive answers:
   1. **Document Analysis**: Gemini 2.0 Flash analyzes company documents
   2. **Web Search**: Perplexity API fetches current information
@@ -19,6 +20,7 @@ The application uses a sophisticated architecture with multiple components:
 
 - **FastAPI Backend**: RESTful API interface
 - **Supabase Integration**: Stores and retrieves company data with Quartr IDs
+- **AWS S3 Storage**: Securely stores and serves financial documents with proper content types
 - **Quartr API Integration**: Fetches financial documents for selected companies
 - **Document Processing**: Converts and standardizes documents (especially transcripts)
 - **Multi-LLM Pipeline**:
@@ -49,7 +51,19 @@ Accepts a JSON payload with company name and query, returns financial insights.
 ```json
 {
   "answer": "Detailed answer from the multi-LLM pipeline...",
-  "processing_time": 15.32
+  "processing_time": 15.32,
+  "sources": [
+    {
+      "type": "document",
+      "title": "Q2 2023 Earnings Call Transcript",
+      "url": "https://alpineinsights.s3.eu-central-2.amazonaws.com/apple_inc/transcript/apple_inc_20230502_transcript.pdf"
+    },
+    {
+      "type": "web",
+      "title": "Apple Reports Second Quarter Results",
+      "url": "https://www.apple.com/newsroom/2023/05/apple-reports-second-quarter-results/"
+    }
+  ]
 }
 ```
 
@@ -64,7 +78,8 @@ Health check endpoint to verify the API is running.
 - Google Gemini API key
 - Perplexity API key
 - Anthropic Claude API key
-- Supabase account with table for company universe
+- AWS account with S3 bucket
+- Supabase account with table for company universe data
 
 ## Local Setup
 
@@ -83,6 +98,26 @@ cp .env.example .env
 4. Run the application
 ```
 hypercorn main:app --reload
+```
+
+## Environment Variables
+
+```
+# AWS S3 Configuration
+AWS_ACCESS_KEY_ID=your_aws_access_key
+AWS_SECRET_ACCESS_KEY=your_aws_secret_key
+AWS_REGION=your_aws_region
+AWS_BUCKET_NAME=your_s3_bucket_name
+
+# API Keys
+QUARTR_API_KEY=your_quartr_api_key
+CLAUDE_API_KEY=your_claude_api_key
+GEMINI_API_KEY=your_gemini_api_key
+PERPLEXITY_API_KEY=your_perplexity_api_key
+
+# Supabase (for company data)
+SUPABASE_URL=your_supabase_url
+SUPABASE_ANON_KEY=your_supabase_anon_key
 ```
 
 ## Deployment on Railway
@@ -114,7 +149,7 @@ hypercorn main:app --reload
 financial-insights-api/
 ├── main.py                  # FastAPI application
 ├── supabase_client.py       # Supabase integration for company data
-├── utils.py                 # Utility classes for API, S3, and document processing
+├── utils.py                 # Utility classes for API, AWS S3, and document processing
 ├── utils_helper.py          # Helper functions to resolve circular imports
 ├── logger.py                # Logger instance
 ├── requirements.txt         # Python dependencies
