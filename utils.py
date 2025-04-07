@@ -94,13 +94,13 @@ class AWSS3StorageHandler:
                 async with session.client('s3') as s3_async:
                     file_obj = io.BytesIO(file_data)
                     
+                    # Upload without ACL parameter since the bucket doesn't support ACLs
                     await s3_async.upload_fileobj(
                         file_obj,
                         self.bucket_name,
                         filename,
                         ExtraArgs={
-                            'ContentType': content_type,
-                            'ACL': 'public-read'  # Make the file publicly accessible
+                            'ContentType': content_type
                         }
                     )
                 
@@ -113,14 +113,13 @@ class AWSS3StorageHandler:
                 import io
                 file_obj = io.BytesIO(file_data)
                 
-                # Upload file to S3
+                # Upload file to S3 without ACL parameter
                 self.s3_client.upload_fileobj(
                     file_obj,
                     self.bucket_name,
                     filename,
                     ExtraArgs={
-                        'ContentType': content_type,
-                        'ACL': 'public-read'  # Make the file publicly accessible
+                        'ContentType': content_type
                     }
                 )
                 
@@ -132,18 +131,21 @@ class AWSS3StorageHandler:
             return False
     
     def get_public_url(self, filename: str) -> str:
-        """Get the public URL for a file in AWS S3"""
+        """Get the URL for a file in AWS S3
+        
+        This bucket is configured with a bucket policy allowing public read access.
+        """
         if not self.s3_client:
             logger.error("AWS S3 client not initialized")
             return ""
             
         try:
-            # Construct S3 URL - choose between path and virtual-hosted style URLs
-            # Virtual-hosted style is more compatible with various browsers
+            # Standard S3 URL with virtual-hosted style (more compatible with browsers)
             url = f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{filename}"
+            logger.info(f"Generated public S3 URL: {url}")
             return url
         except Exception as e:
-            logger.error(f"Error generating public S3 URL: {str(e)}")
+            logger.error(f"Error generating S3 URL: {str(e)}")
             return ""
     
     async def download_file(self, filename: str, local_path: str) -> bool:
@@ -199,6 +201,37 @@ class AWSS3StorageHandler:
         except Exception as e:
             logger.error(f"Error downloading file from S3: {str(e)}")
             return False
+
+    def get_presigned_url(self, filename: str, expiration=3600) -> str:
+        """Generate a presigned URL for a file in S3 that will work even if the bucket is private.
+        
+        Args:
+            filename (str): The path to the file in S3
+            expiration (int): The time in seconds that the URL will be valid for (default: 1 hour)
+            
+        Returns:
+            str: A presigned URL that can be used to access the file
+        """
+        if not self.s3_client:
+            logger.error("AWS S3 client not initialized")
+            return ""
+            
+        try:
+            # Generate a presigned URL that will work even if the bucket is private
+            presigned_url = self.s3_client.generate_presigned_url(
+                'get_object',
+                Params={
+                    'Bucket': self.bucket_name,
+                    'Key': filename
+                },
+                ExpiresIn=expiration
+            )
+            
+            logger.info(f"Generated presigned URL (valid for {expiration} seconds) for {filename}")
+            return presigned_url
+        except Exception as e:
+            logger.error(f"Error generating presigned URL: {str(e)}")
+            return ""
 
 class QuartrAPI:
     def __init__(self):
