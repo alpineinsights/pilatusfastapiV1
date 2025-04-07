@@ -566,6 +566,10 @@ async def get_financial_insights(request: QueryRequest):
             # Get URL from file info
             if 'url' in file_info:
                 url = file_info['url']
+                # Remove trailing question mark if present
+                if url.endswith('?'):
+                    url = url[:-1]
+                
                 filename = os.path.basename(file_info['filename'])
                 sources_section += f"{i}. [{filename}]({url})\n"
                 
@@ -584,6 +588,10 @@ async def get_financial_insights(request: QueryRequest):
                 if isinstance(citation, str):
                     # If citation is just a URL string
                     url = citation
+                    # Remove trailing question mark if present
+                    if url.endswith('?'):
+                        url = url[:-1]
+                    
                     # Extract domain from URL if title is missing
                     try:
                         domain = urlparse(url).netloc
@@ -600,6 +608,10 @@ async def get_financial_insights(request: QueryRequest):
                 elif isinstance(citation, dict):
                     # If citation is a dictionary object
                     url = citation.get("url", "")
+                    # Remove trailing question mark if present
+                    if url.endswith('?'):
+                        url = url[:-1]
+                    
                     title = citation.get("title", "")
                     if not title:
                         # Extract domain from URL if title is missing
