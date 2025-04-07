@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from utils import QuartrAPI, SupabaseStorageHandler, TranscriptProcessor
 from supabase_client import get_quartrid_by_name
 from logger import logger
+from urllib.parse import urlparse  # For parsing citation URLs
 
 # Load environment variables
 load_dotenv()
@@ -37,6 +38,7 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     processing_time: float
+    sources: Optional[Dict[str, List[Dict[str, str]]]] = None
 
 # Global conversation context - will be updated per company
 conversation_contexts = {}
@@ -545,14 +547,84 @@ async def get_financial_insights(request: QueryRequest):
         perplexity_output, citations = await perplexity_task
         
         # Generate final answer with Claude
-        final_answer = query_claude(
+        claude_response = query_claude(
             request.query, request.company_name, gemini_output, perplexity_output, conversation_context
         )
+        
+        # Format sources section
+        sources_section = "\n\n### Sources\n"
+        
+        # Prepare structured sources for the response
+        structured_sources = {
+            "company_data": [],
+            "web_sources": []
+        }
+        
+        # Add document sources under "Company data" sub-header
+        sources_section += "\n#### Company data\n"
+        for i, file_info in enumerate(processed_files, 1):
+            # Get URL from file info
+            if 'url' in file_info:
+                url = file_info['url']
+                filename = os.path.basename(file_info['filename'])
+                sources_section += f"{i}. [{filename}]({url})\n"
+                
+                # Add to structured sources
+                structured_sources["company_data"].append({
+                    "title": filename,
+                    "url": url,
+                    "type": file_info.get('type', 'document')
+                })
+        
+        # Add Perplexity attribution and citations under "Web sources" sub-header
+        sources_section += "\n#### Web sources\n"
+        if citations:
+            for i, citation in enumerate(citations, 1):
+                # Handle different citation formats
+                if isinstance(citation, str):
+                    # If citation is just a URL string
+                    url = citation
+                    # Extract domain from URL if title is missing
+                    try:
+                        domain = urlparse(url).netloc
+                        title = domain
+                    except:
+                        title = f"Source {i}"
+                    sources_section += f"{i}. [{title}]({url})\n"
+                    
+                    # Add to structured sources
+                    structured_sources["web_sources"].append({
+                        "title": title,
+                        "url": url
+                    })
+                elif isinstance(citation, dict):
+                    # If citation is a dictionary object
+                    url = citation.get("url", "")
+                    title = citation.get("title", "")
+                    if not title:
+                        # Extract domain from URL if title is missing
+                        try:
+                            domain = urlparse(url).netloc
+                            title = domain
+                        except:
+                            title = f"Source {i}"
+                    sources_section += f"{i}. [{title}]({url})\n"
+                    
+                    # Add to structured sources
+                    structured_sources["web_sources"].append({
+                        "title": title,
+                        "url": url
+                    })
+        else:
+            sources_section += "*No specific web sources cited by Perplexity AI*"
+        
+        # Combine response with sources
+        final_answer = claude_response + sources_section
         
         # Update conversation context with this exchange
         new_entry = {
             "query": request.query,
-            "summary": final_answer[:500] + "..." if len(final_answer) > 500 else final_answer
+            "summary": claude_response[:500] + "..." if len(claude_response) > 500 else claude_response
         }
         conversation_context.append(new_entry)
         
@@ -566,7 +638,8 @@ async def get_financial_insights(request: QueryRequest):
         
         return {
             "answer": final_answer,
-            "processing_time": processing_time
+            "processing_time": processing_time,
+            "sources": structured_sources
         }
     
     except Exception as e:
