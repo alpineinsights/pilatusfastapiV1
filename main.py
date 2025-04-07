@@ -320,91 +320,138 @@ async def process_company_documents(company_id: str, company_name: str, event_ty
                 if transcript_count >= 2 and report_count >= 2 and pdf_count >= 2:
                     break
                     
-                event_type = event.get('type', '').lower()
-                event_title = event.get('title', '')
-                event_date = event.get('eventDate', '')
-                document_url = event.get('documentUrl', '')
-                transcript_url = event.get('transcriptUrl', '')
+                event_date = event.get('eventDate', '').split('T')[0] if 'T' in event.get('eventDate', '') else event.get('eventDate', '')
+                event_title = event.get('eventTitle', event.get('title', 'Unknown Event'))
                 
-                # Skip events without any documents or transcripts
-                if not document_url and not transcript_url:
-                    continue
+                # Log event details for debugging
+                logger.info(f"Processing event: {event_title} from {event_date}")
                 
-                # Process document first if available
-                if document_url and (event_type == 'report' and report_count < 2) or (pdf_count < 2):
+                # Process PDF/slides (if we need more)
+                if pdf_count < 2 and event.get('pdfUrl'):
                     try:
-                        # Create a filename for the document
-                        original_filename = document_url.split('/')[-1]
-                        filename = storage_handler.create_filename(
-                            company_name, event_date, event_title, 
-                            'report' if event_type == 'report' else 'presentation', 
-                            original_filename
-                        )
+                        # Log the URL we're trying to download
+                        logger.info(f"Attempting to download slides from: {event.get('pdfUrl')}")
                         
-                        # Try to download the file
-                        document_data = await quartr_api.get_document(document_url, session)
-                        if document_data:
-                            # Upload to Supabase storage
-                            success = await storage_handler.upload_file(document_data, filename)
-                            if success:
-                                if event_type == 'report':
-                                    report_count += 1
-                                else:
-                                    pdf_count += 1
-                                    
-                                # Add to processed files list
-                                processed_files.append({
-                                    'filename': filename,
-                                    'type': 'report' if event_type == 'report' else 'presentation',
-                                    'title': event_title,
-                                    'date': event_date,
-                                    'url': storage_handler.get_public_url(filename)
-                                })
+                        async with session.get(event.get('pdfUrl')) as response:
+                            if response.status == 200:
+                                content = await response.read()
+                                original_filename = event.get('pdfUrl').split('/')[-1]
                                 
-                                logger.info(f"Successfully processed and stored document: {filename}")
+                                # Remove any URL query parameters from the original filename
+                                if '?' in original_filename:
+                                    original_filename = original_filename.split('?')[0]
+                                
+                                filename = storage_handler.create_filename(
+                                    company_name, event_date, event_title, 'slides', original_filename
+                                )
+                                
+                                success = await storage_handler.upload_file(
+                                    content, filename, 
+                                    response.headers.get('content-type', 'application/pdf')
+                                )
+                                
+                                if success:
+                                    public_url = storage_handler.get_public_url(filename)
+                                    processed_files.append({
+                                        'filename': filename,
+                                        'type': 'presentation',
+                                        'title': event_title,
+                                        'date': event_date,
+                                        'url': public_url
+                                    })
+                                    pdf_count += 1
+                                    logger.info(f"Successfully processed and stored slides: {filename}")
+                            else:
+                                logger.error(f"Failed to download slides: HTTP {response.status}")
                     except Exception as e:
-                        logger.error(f"Error processing document: {str(e)}")
+                        logger.error(f"Error processing slides for {event_title}: {str(e)}")
                 
-                # Process transcript if available
-                if transcript_url and transcript_count < 2:
+                # Process report (if we need more)
+                if report_count < 2 and event.get('reportUrl'):
                     try:
-                        # Process transcript (get the text content)
+                        # Log the URL we're trying to download
+                        logger.info(f"Attempting to download report from: {event.get('reportUrl')}")
+                        
+                        async with session.get(event.get('reportUrl')) as response:
+                            if response.status == 200:
+                                content = await response.read()
+                                original_filename = event.get('reportUrl').split('/')[-1]
+                                
+                                # Remove any URL query parameters from the original filename
+                                if '?' in original_filename:
+                                    original_filename = original_filename.split('?')[0]
+                                
+                                filename = storage_handler.create_filename(
+                                    company_name, event_date, event_title, 'report', original_filename
+                                )
+                                
+                                success = await storage_handler.upload_file(
+                                    content, filename, 
+                                    response.headers.get('content-type', 'application/pdf')
+                                )
+                                
+                                if success:
+                                    public_url = storage_handler.get_public_url(filename)
+                                    processed_files.append({
+                                        'filename': filename,
+                                        'type': 'report',
+                                        'title': event_title,
+                                        'date': event_date,
+                                        'url': public_url
+                                    })
+                                    report_count += 1
+                                    logger.info(f"Successfully processed and stored report: {filename}")
+                            else:
+                                logger.error(f"Failed to download report: HTTP {response.status}")
+                    except Exception as e:
+                        logger.error(f"Error processing report for {event_title}: {str(e)}")
+                
+                # Process transcript (if we need more)
+                if transcript_count < 2 and event.get('transcriptUrl'):
+                    try:
+                        # Log the transcript URL we're processing
+                        logger.info(f"Processing transcript from: {event.get('transcriptUrl')}")
+                        
+                        # Get transcript data
+                        transcripts = event.get('transcripts', {})
+                        if not transcripts:
+                            # If the transcripts object is empty, check for liveTranscripts
+                            transcripts = event.get('liveTranscripts', {})
+                        
                         transcript_text = await transcript_processor.process_transcript(
-                            transcript_url, event.get('transcripts', {}), session
+                            event.get('transcriptUrl'), transcripts, session
                         )
                         
                         if transcript_text:
-                            # Create a PDF from the transcript text
                             pdf_data = transcript_processor.create_pdf(
                                 company_name, event_title, event_date, transcript_text
                             )
                             
-                            if pdf_data:
-                                # Create filename and upload to storage
-                                filename = storage_handler.create_filename(
-                                    company_name, event_date, event_title, 'transcript', 'transcript.pdf'
-                                )
-                                
-                                # Upload to Supabase storage
-                                success = await storage_handler.upload_file(pdf_data, filename)
-                                if success:
-                                    transcript_count += 1
-                                    
-                                    # Add to processed files list
-                                    processed_files.append({
-                                        'filename': filename,
-                                        'type': 'transcript',
-                                        'title': event_title,
-                                        'date': event_date,
-                                        'url': storage_handler.get_public_url(filename),
-                                        'text': transcript_text[:1000] + "..." if len(transcript_text) > 1000 else transcript_text
-                                    })
-                                    
-                                    logger.info(f"Successfully processed and stored transcript: {filename}")
+                            filename = storage_handler.create_filename(
+                                company_name, event_date, event_title, 'transcript', 'transcript.pdf'
+                            )
+                            
+                            success = await storage_handler.upload_file(
+                                pdf_data, filename, 'application/pdf'
+                            )
+                            
+                            if success:
+                                public_url = storage_handler.get_public_url(filename)
+                                processed_files.append({
+                                    'filename': filename,
+                                    'type': 'transcript',
+                                    'title': event_title,
+                                    'date': event_date,
+                                    'url': public_url,
+                                    'text': transcript_text[:1000] + "..." if len(transcript_text) > 1000 else transcript_text
+                                })
+                                transcript_count += 1
+                                logger.info(f"Successfully processed and stored transcript: {filename}")
                     except Exception as e:
-                        logger.error(f"Error processing transcript: {str(e)}")
+                        logger.error(f"Error processing transcript for {event_title}: {str(e)}")
             
-            logger.info(f"Completed processing {len(processed_files)} files for {company_name}")
+            # Log the number of documents processed
+            logger.info(f"Processed {pdf_count} presentations, {report_count} reports, and {transcript_count} transcripts")
             return processed_files
     except Exception as e:
         logger.error(f"Error in process_company_documents: {str(e)}")
