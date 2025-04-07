@@ -27,19 +27,32 @@ QUARTR_API_KEY = os.getenv("QUARTR_API_KEY", "")
 if not QUARTR_API_KEY:
     logger.error("QUARTR_API_KEY not found in environment variables")
 
-# Initialize Supabase client for storage
-@lru_cache(maxsize=1)
-def init_supabase_storage_client():
-    """Initialize and cache the Supabase client for storage operations"""
-    from supabase_client import init_client
-    return init_client()
-
-class SupabaseStorageHandler:
-    """Handler for Supabase storage operations"""
+# AWSS3StorageHandler replaces the previous SupabaseStorageHandler
+class AWSS3StorageHandler:
+    """Handler for AWS S3 storage operations"""
     
     def __init__(self):
-        self.client = init_supabase_storage_client()
-        self.bucket_name = os.getenv("SUPABASE_BUCKET_NAME", "alpinedatalake")
+        import boto3
+        from botocore.client import Config
+        
+        self.access_key = os.getenv("AWS_ACCESS_KEY_ID", "AKIAW3MEESPGPUDIYMGN")
+        self.secret_key = os.getenv("AWS_SECRET_ACCESS_KEY", "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")
+        self.region = os.getenv("AWS_REGION", "eu-central-2")
+        self.bucket_name = os.getenv("AWS_BUCKET_NAME", "alpineinsights")
+        
+        try:
+            # Configure S3 client with appropriate settings
+            self.s3_client = boto3.client(
+                's3',
+                aws_access_key_id=self.access_key,
+                aws_secret_access_key=self.secret_key,
+                region_name=self.region,
+                config=Config(signature_version='s3v4')
+            )
+            logger.info(f"Successfully initialized AWS S3 client for bucket: {self.bucket_name}")
+        except Exception as e:
+            logger.error(f"Error initializing AWS S3 client: {str(e)}")
+            self.s3_client = None
     
     def create_filename(self, company_name: str, event_date: str, event_title: str, 
                        doc_type: str, original_filename: str) -> str:
@@ -59,147 +72,133 @@ class SupabaseStorageHandler:
         return filename
     
     async def upload_file(self, file_data: bytes, filename: str, content_type: str = 'application/pdf') -> bool:
-        """Upload a file to Supabase storage"""
-        if not self.client:
-            logger.error("Supabase client not initialized")
+        """Upload a file to AWS S3 storage asynchronously"""
+        if not self.s3_client:
+            logger.error("AWS S3 client not initialized")
             return False
             
         try:
-            # Format options according to Supabase API expectations
-            upload_options = {
-                "contentType": content_type,
-                "upsert": "true"  # As string, not boolean
-            }
+            logger.info(f"Uploading file to S3 bucket {self.bucket_name} at path {filename}")
             
-            logger.info(f"Uploading file to {self.bucket_name}/{filename}")
-            
-            # Upload file to Supabase storage
-            self.client.storage.from_(self.bucket_name).upload(
-                path=filename,
-                file=file_data,
-                file_options=upload_options
-            )
-            
-            logger.info(f"Successfully uploaded {filename} to Supabase bucket {self.bucket_name}")
-            return True
-        except Exception as e:
-            logger.error(f"Error uploading file to Supabase storage: {str(e)}")
-            
-            # Try direct HTTP method as fallback
+            # Try to use aioboto3 for async uploads if available
             try:
-                logger.info(f"Attempting direct HTTP upload for {filename}")
+                import aioboto3
+                import io
                 
-                # Get Supabase credentials from environment variables
-                supabase_url = os.getenv("SUPABASE_URL", "https://maeistbokyjhewrrisvf.supabase.co")
-                supabase_key = os.getenv("SUPABASE_ANON_KEY")
+                session = aioboto3.Session(
+                    aws_access_key_id=self.access_key,
+                    aws_secret_access_key=self.secret_key,
+                    region_name=self.region
+                )
                 
-                if not supabase_key:
-                    logger.error("Missing Supabase key for direct upload")
-                    return False
+                async with session.client('s3') as s3_async:
+                    file_obj = io.BytesIO(file_data)
+                    
+                    await s3_async.upload_fileobj(
+                        file_obj,
+                        self.bucket_name,
+                        filename,
+                        ExtraArgs={
+                            'ContentType': content_type,
+                            'ACL': 'public-read'  # Make the file publicly accessible
+                        }
+                    )
                 
-                url = f"{supabase_url}/storage/v1/object/{self.bucket_name}/{filename}"
-                headers = {
-                    "Authorization": f"Bearer {supabase_key}",
-                    "Content-Type": content_type
-                }
+                logger.info(f"Successfully uploaded {filename} to S3 bucket {self.bucket_name} using async client")
+                return True
                 
-                response = requests.post(url, headers=headers, data=file_data)
+            except ImportError:
+                # Fallback to synchronous boto3 if aioboto3 is not available
+                logger.warning("aioboto3 not available, falling back to synchronous upload")
+                import io
+                file_obj = io.BytesIO(file_data)
                 
-                if response.status_code in (200, 201):
-                    logger.info(f"Direct HTTP upload successful for {filename}")
-                    return True
+                # Upload file to S3
+                self.s3_client.upload_fileobj(
+                    file_obj,
+                    self.bucket_name,
+                    filename,
+                    ExtraArgs={
+                        'ContentType': content_type,
+                        'ACL': 'public-read'  # Make the file publicly accessible
+                    }
+                )
                 
-                logger.error(f"Direct HTTP upload failed: {response.status_code}")
-            except Exception as fallback_error:
-                logger.error(f"Direct HTTP upload attempt failed: {str(fallback_error)}")
-            
+                logger.info(f"Successfully uploaded {filename} to S3 bucket {self.bucket_name}")
+                return True
+                
+        except Exception as e:
+            logger.error(f"Error uploading file to AWS S3: {str(e)}")
             return False
     
     def get_public_url(self, filename: str) -> str:
-        """Get the public URL for a file in Supabase storage"""
-        if not self.client:
+        """Get the public URL for a file in AWS S3"""
+        if not self.s3_client:
+            logger.error("AWS S3 client not initialized")
             return ""
             
         try:
-            # First attempt to use the client method
-            url = self.client.storage.from_(self.bucket_name).get_public_url(filename)
-            
-            # Clean up the URL by removing any trailing question mark
-            if url:
-                # Remove trailing question mark if present
-                if url.endswith('?'):
-                    url = url[:-1]
-                return url
-                
-            # If that fails, construct the URL manually
-            supabase_url = os.getenv("SUPABASE_URL", "https://maeistbokyjhewrrisvf.supabase.co")
-            manual_url = f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
-            return manual_url
+            # Construct S3 URL - choose between path and virtual-hosted style URLs
+            # Virtual-hosted style is more compatible with various browsers
+            url = f"https://{self.bucket_name}.s3.{self.region}.amazonaws.com/{filename}"
+            return url
         except Exception as e:
-            logger.error(f"Error getting public URL: {str(e)}")
-            
-            # Last resort fallback
-            supabase_url = os.getenv("SUPABASE_URL", "https://maeistbokyjhewrrisvf.supabase.co")
-            fallback_url = f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
-            return fallback_url
+            logger.error(f"Error generating public S3 URL: {str(e)}")
+            return ""
     
     async def download_file(self, filename: str, local_path: str) -> bool:
-        """Download a file from Supabase storage to a local path"""
-        if not self.client:
-            logger.error("Supabase client not initialized")
+        """Download a file from AWS S3 to a local path asynchronously"""
+        if not self.s3_client:
+            logger.error("AWS S3 client not initialized")
             return False
             
         # Create the directory if it doesn't exist
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         
         try:
-            logger.info(f"Attempting to download {filename} using Supabase client")
-            # Download the file from Supabase storage
-            response = self.client.storage.from_(self.bucket_name).download(filename)
+            logger.info(f"Downloading {filename} from S3 bucket {self.bucket_name}")
             
-            # Write the file to disk
-            with open(local_path, 'wb') as f:
-                f.write(response)
-            
-            # Verify file was downloaded successfully
-            if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-                logger.info(f"Successfully downloaded {filename} to {local_path}")
-                return True
-            else:
-                logger.warning(f"Downloaded file exists but is empty: {local_path}")
-        except Exception as e:
-            logger.error(f"Error downloading file using Supabase client: {str(e)}")
-            
-            # If client download fails, try direct HTTP method
+            # Try to use aioboto3 for async downloads if available
             try:
-                logger.info(f"Attempting direct HTTP download for {filename}")
+                import aioboto3
                 
-                # Get the direct URL to the file
-                supabase_url = os.getenv("SUPABASE_URL", "https://maeistbokyjhewrrisvf.supabase.co")
+                session = aioboto3.Session(
+                    aws_access_key_id=self.access_key,
+                    aws_secret_access_key=self.secret_key,
+                    region_name=self.region
+                )
                 
-                # Construct public URL
-                public_url = f"{supabase_url}/storage/v1/object/public/{self.bucket_name}/{filename}"
-                
-                # Remove trailing question mark if present
-                if public_url.endswith('?'):
-                    public_url = public_url[:-1]
-                
-                response = requests.get(public_url, stream=True)
-                
-                if response.status_code == 200:
+                async with session.client('s3') as s3_async:
                     with open(local_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    
-                    if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-                        logger.info(f"Direct HTTP download successful for {filename}")
-                        return True
+                        await s3_async.download_fileobj(self.bucket_name, filename, f)
+                
+                # Verify file was downloaded successfully
+                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    logger.info(f"Successfully downloaded {filename} to {local_path} using async client")
+                    return True
                 else:
-                    logger.error(f"Direct HTTP download failed: HTTP {response.status_code}")
-            except Exception as http_error:
-                logger.error(f"Direct HTTP download failed: {str(http_error)}")
-        
-        return False
+                    logger.warning(f"Downloaded file exists but is empty: {local_path}")
+                    return False
+                    
+            except ImportError:
+                # Fallback to synchronous boto3 if aioboto3 is not available
+                logger.warning("aioboto3 not available, falling back to synchronous download")
+                
+                # Download the file from S3
+                with open(local_path, 'wb') as f:
+                    self.s3_client.download_fileobj(self.bucket_name, filename, f)
+                
+                # Verify file was downloaded successfully
+                if os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    logger.info(f"Successfully downloaded {filename} to {local_path}")
+                    return True
+                else:
+                    logger.warning(f"Downloaded file exists but is empty: {local_path}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"Error downloading file from S3: {str(e)}")
+            return False
 
 class QuartrAPI:
     def __init__(self):
